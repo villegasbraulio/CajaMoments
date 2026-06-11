@@ -1,0 +1,162 @@
+from django.contrib import admin, messages
+from django.core.exceptions import ValidationError
+
+from .models import (
+    Account,
+    AccountTransfer,
+    CashMovement,
+    Client,
+    DailyAccountClose,
+    DailyCashCloseGroup,
+    Employee,
+    EmployeePayment,
+    EmployeeRole,
+    Event,
+    EventStaffAssignment,
+    MovementCode,
+    Provider,
+    ProviderLedgerEntry,
+    Reminder,
+    TaxPayment,
+    TaxType,
+)
+from .services import void_cash_movement
+
+
+class AuditReadonlyMixin:
+    readonly_fields = ("created_at", "updated_at")
+
+
+@admin.register(Account)
+class AccountAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("name", "type", "currency", "initial_balance", "active", "updated_at")
+    search_fields = ("name", "notes")
+    list_filter = ("type", "currency", "active")
+
+
+@admin.register(MovementCode)
+class MovementCodeAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("code", "name", "movement_type", "category", "active")
+    search_fields = ("code", "name", "category")
+    list_filter = ("movement_type", "category", "active", "requires_provider", "requires_employee", "requires_tax", "requires_event")
+
+
+@admin.register(CashMovement)
+class CashMovementAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("date_payment", "account", "movement_type", "code", "amount", "status", "provider", "employee", "event")
+    search_fields = ("description", "voucher_number", "notes", "provider__name", "employee__first_name", "employee__last_name", "event__name")
+    list_filter = ("status", "movement_type", "account", "code", "date_payment")
+    readonly_fields = AuditReadonlyMixin.readonly_fields + ("created_by", "updated_by", "voided_by", "void_reason")
+    actions = ("void_selected",)
+
+    @admin.action(description="Anular movimientos seleccionados")
+    def void_selected(self, request, queryset):
+        count = 0
+        for movement in queryset:
+            try:
+                void_cash_movement(movement, "Anulado desde admin", request.user)
+                count += 1
+            except ValidationError as exc:
+                self.message_user(request, f"No se pudo anular {movement.id}: {exc}", level=messages.ERROR)
+        if count:
+            self.message_user(request, f"Movimientos anulados: {count}", level=messages.SUCCESS)
+
+
+@admin.register(AccountTransfer)
+class AccountTransferAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("date", "from_account", "to_account", "amount", "fee_amount", "status")
+    search_fields = ("description",)
+    list_filter = ("status", "from_account", "to_account", "date")
+
+
+@admin.register(DailyCashCloseGroup)
+class DailyCashCloseGroupAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("date", "status", "closed_at")
+    search_fields = ("notes",)
+    list_filter = ("status", "date")
+    readonly_fields = AuditReadonlyMixin.readonly_fields + ("closed_at",)
+
+
+@admin.register(DailyAccountClose)
+class DailyAccountCloseAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("close_group", "account", "calculated_balance", "declared_balance", "difference", "closed_at")
+    search_fields = ("account__name", "notes")
+    list_filter = ("account", "close_group__date")
+    readonly_fields = AuditReadonlyMixin.readonly_fields + ("closed_at",)
+
+
+@admin.register(Provider)
+class ProviderAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("name", "category", "cuit", "phone", "active")
+    search_fields = ("name", "category", "cuit", "phone", "email")
+    list_filter = ("category", "active")
+
+
+@admin.register(ProviderLedgerEntry)
+class ProviderLedgerEntryAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("date", "provider", "entry_type", "amount", "event", "cash_movement")
+    search_fields = ("provider__name", "description", "document_number", "notes")
+    list_filter = ("entry_type", "provider", "date")
+
+
+@admin.register(Employee)
+class EmployeeAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("last_name", "first_name", "alias", "phone", "active")
+    search_fields = ("first_name", "last_name", "alias", "phone", "document_number")
+    list_filter = ("active",)
+
+
+@admin.register(EmployeeRole)
+class EmployeeRoleAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("name", "active")
+    search_fields = ("name",)
+    list_filter = ("active",)
+
+
+@admin.register(Client)
+class ClientAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("name", "phone", "email")
+    search_fields = ("name", "phone", "email")
+
+
+@admin.register(Event)
+class EventAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("name", "client", "event_type", "event_date", "status")
+    search_fields = ("name", "client__name", "event_type", "notes")
+    list_filter = ("status", "event_type", "event_date")
+
+
+@admin.register(EventStaffAssignment)
+class EventStaffAssignmentAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("event", "employee", "role", "work_date", "total_amount", "status")
+    search_fields = ("event__name", "employee__first_name", "employee__last_name", "employee__alias", "role__name")
+    list_filter = ("status", "role", "work_date")
+
+
+@admin.register(EmployeePayment)
+class EmployeePaymentAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("payment_date", "employee", "event", "assignment", "amount", "cash_movement")
+    search_fields = ("employee__first_name", "employee__last_name", "employee__alias", "notes")
+    list_filter = ("payment_date", "employee", "event")
+
+
+@admin.register(TaxType)
+class TaxTypeAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("name", "active")
+    search_fields = ("name", "description")
+    list_filter = ("active",)
+
+
+@admin.register(TaxPayment)
+class TaxPaymentAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("payment_date", "tax_type", "period", "account", "amount", "cash_movement")
+    search_fields = ("tax_type__name", "period", "notes")
+    list_filter = ("tax_type", "account", "payment_date")
+
+
+@admin.register(Reminder)
+class ReminderAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("due_date", "title", "status", "recurrence_type", "related_tax_payment", "related_event", "related_provider")
+    search_fields = ("title", "description")
+    list_filter = ("status", "recurrence_type", "due_date")
+    readonly_fields = AuditReadonlyMixin.readonly_fields + ("completed_at",)
