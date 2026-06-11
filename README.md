@@ -246,9 +246,8 @@ Eso crea:
 ### Que hace el deploy
 
 - `backend/build.sh` instala dependencias y corre `collectstatic`
-- `preDeployCommand` corre migraciones y `seed_initial_data --skip-examples`
 - el backend arranca con `gunicorn`
-- el frontend se builda con Vite y se publica como sitio estatico
+- si usas plan free, las migraciones y seeds se corren manualmente desde el Shell de Render
 
 ### Paso manual importante despues del primer deploy
 
