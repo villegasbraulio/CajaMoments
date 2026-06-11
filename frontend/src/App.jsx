@@ -37,17 +37,25 @@ async function api(path, options = {}) {
   if (response.status === 401) {
     throw new Error("AUTH_REQUIRED");
   }
+  const rawBody = response.status === 204 ? "" : await response.text();
   if (!response.ok) {
     let detail = "Error al comunicarse con la API";
-    try {
-      detail = JSON.stringify(await response.json());
-    } catch {
-      detail = await response.text();
+    if (rawBody) {
+      try {
+        detail = JSON.stringify(JSON.parse(rawBody));
+      } catch {
+        detail = rawBody;
+      }
     }
     throw new Error(detail);
   }
   if (response.status === 204) return null;
-  return response.json();
+  if (!rawBody) return null;
+  try {
+    return JSON.parse(rawBody);
+  } catch {
+    return rawBody;
+  }
 }
 
 function money(value, currency = "ARS") {
