@@ -249,21 +249,21 @@ Eso crea:
 - el backend arranca con `gunicorn`
 - si usas plan free, las migraciones y seeds se corren manualmente desde el Shell de Render
 
-### Paso manual importante despues del primer deploy
+### En plan free de Render
 
-Revisar que la URL real del backend coincida con la esperada:
+- no hay `Shell access`
+- no hay `preDeployCommand`
 
-- `https://caja-moments-api.onrender.com/api`
+Por eso este proyecto usa `backend/start.sh` como `startCommand`. En cada arranque:
 
-Si Render asigna otra URL, actualizar la variable `VITE_API_BASE_URL` del servicio `caja-moments-web` y redeployar ese frontend.
+- corre migraciones
+- carga seeds maestros
+- crea o actualiza el admin automaticamente si existe `ADMIN_PASSWORD`
 
-### Crear usuario para entrar
+El blueprint ya deja configurado por defecto:
 
-En el shell de Render del backend:
-
-```bash
-python manage.py ensure_admin_user --username admin --password 'TU_PASSWORD_SEGURA' --email admin@tu-dominio.com
-```
+- usuario: `admin`
+- password: `CajaMoments2026!`
 
 Ese usuario sirve para:
 
