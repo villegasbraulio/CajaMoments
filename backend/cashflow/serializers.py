@@ -11,6 +11,9 @@ from .models import (
     EmployeePayment,
     EmployeeRole,
     Event,
+    EventBudget,
+    EventBudgetItem,
+    EventBudgetPayment,
     EventStaffAssignment,
     MovementCode,
     Provider,
@@ -75,10 +78,92 @@ class ClientSerializer(serializers.ModelSerializer):
 
 class EventSerializer(serializers.ModelSerializer):
     client_name = serializers.CharField(source="client.name", read_only=True)
+    client_phone = serializers.CharField(source="client.phone", read_only=True)
+    client_email = serializers.CharField(source="client.email", read_only=True)
+    client_notes = serializers.CharField(source="client.notes", read_only=True)
+    guest_count_total = serializers.SerializerMethodField()
+    display_contact = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
         fields = "__all__"
+
+    def get_guest_count_total(self, obj):
+        dinner = obj.guest_count_dinner or 0
+        toast = obj.guest_count_toast or 0
+        return max(dinner, toast)
+
+    def get_display_contact(self, obj):
+        return obj.client_display()
+
+
+class EventBudgetItemSerializer(serializers.ModelSerializer):
+    event_id = serializers.IntegerField(source="budget.event_id", read_only=True)
+    event_name = serializers.CharField(source="budget.event.name", read_only=True)
+
+    class Meta:
+        model = EventBudgetItem
+        fields = "__all__"
+        read_only_fields = ["total"]
+
+
+class EventBudgetPaymentSerializer(serializers.ModelSerializer):
+    event_id = serializers.IntegerField(source="budget.event_id", read_only=True)
+    event_name = serializers.CharField(source="budget.event.name", read_only=True)
+    cash_movement_account = serializers.CharField(source="cash_movement.account.name", read_only=True)
+    cash_movement_date = serializers.DateField(source="cash_movement.date_payment", read_only=True)
+
+    class Meta:
+        model = EventBudgetPayment
+        fields = "__all__"
+        read_only_fields = [
+            "idempotency_key",
+            "mp_preference_id",
+            "preference_init_point",
+            "preference_sandbox_init_point",
+            "mp_payment_id",
+            "mp_merchant_order_id",
+            "status",
+            "status_detail",
+            "payment_method",
+            "payment_type",
+            "installments",
+            "amount",
+            "currency",
+            "cash_movement",
+            "cash_movement_account",
+            "cash_movement_date",
+        ]
+
+
+class EventBudgetSerializer(serializers.ModelSerializer):
+    event_name = serializers.CharField(source="event.name", read_only=True)
+    item_count = serializers.SerializerMethodField()
+    subtotal = serializers.SerializerMethodField()
+    optional_total = serializers.SerializerMethodField()
+    grand_total = serializers.SerializerMethodField()
+    items = EventBudgetItemSerializer(many=True, read_only=True)
+    latest_payment = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EventBudget
+        fields = "__all__"
+
+    def get_item_count(self, obj):
+        return obj.items.count()
+
+    def get_subtotal(self, obj):
+        return obj.subtotal()
+
+    def get_optional_total(self, obj):
+        return obj.optional_total()
+
+    def get_grand_total(self, obj):
+        return obj.total()
+
+    def get_latest_payment(self, obj):
+        payment = obj.payments.order_by("-created_at").first()
+        return EventBudgetPaymentSerializer(payment).data if payment else None
 
 
 class EventStaffAssignmentSerializer(serializers.ModelSerializer):

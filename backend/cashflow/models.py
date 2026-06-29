@@ -1,4 +1,5 @@
 from decimal import Decimal
+import uuid
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -182,6 +183,20 @@ class Event(TimestampedModel):
     name = models.CharField(max_length=180)
     event_type = models.CharField(max_length=120, blank=True)
     event_date = models.DateField(null=True, blank=True)
+    event_time = models.TimeField(null=True, blank=True)
+    venue_space = models.CharField(max_length=160, blank=True)
+    guest_count_dinner = models.PositiveIntegerField(null=True, blank=True)
+    guest_count_toast = models.PositiveIntegerField(null=True, blank=True)
+    main_table_notes = models.CharField(max_length=240, blank=True)
+    tableware_notes = models.CharField(max_length=240, blank=True)
+    protocol_notes = models.TextField(blank=True)
+    beverage_notes = models.TextField(blank=True)
+    additional_notes = models.TextField(blank=True)
+    operational_notes = models.TextField(blank=True)
+    internal_status = models.CharField(max_length=120, blank=True)
+    contact_name = models.CharField(max_length=160, blank=True)
+    contact_phone = models.CharField(max_length=80, blank=True)
+    contact_email = models.EmailField(blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
     notes = models.TextField(blank=True)
 
@@ -190,6 +205,140 @@ class Event(TimestampedModel):
 
     def __str__(self):
         return self.name
+
+    def client_display(self):
+        return self.client.name if self.client_id else (self.contact_name or "")
+
+
+class EventBudget(TimestampedModel):
+    class Status(models.TextChoices):
+        DRAFT = "DRAFT", "Borrador"
+        SENT = "SENT", "Enviado"
+        APPROVED = "APPROVED", "Aprobado"
+        CANCELLED = "CANCELLED", "Cancelado"
+
+    event = models.OneToOneField(Event, on_delete=models.CASCADE, related_name="budget")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
+    notes = models.TextField(blank=True)
+    optional_comments = models.TextField(blank=True)
+    internal_notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+
+    def __str__(self):
+        return f"Presupuesto - {self.event}"
+
+    def subtotal(self):
+        return self.items.filter(is_optional=False).aggregate(total=Sum("total"))["total"] or Decimal("0.00")
+
+    def optional_total(self):
+        return self.items.filter(is_optional=True).aggregate(total=Sum("total"))["total"] or Decimal("0.00")
+
+    def total(self):
+        return self.items.aggregate(total=Sum("total"))["total"] or Decimal("0.00")
+
+
+class EventBudgetItem(TimestampedModel):
+    budget = models.ForeignKey(EventBudget, on_delete=models.CASCADE, related_name="items")
+    service_name = models.CharField(max_length=180)
+    category = models.CharField(max_length=120, blank=True)
+    quantity = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("1.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+    unit_label = models.CharField(max_length=40, blank=True)
+    unit_price = models.DecimalField(
+        max_digits=MONEY_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+    total = models.DecimalField(
+        max_digits=MONEY_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+    sort_order = models.PositiveIntegerField(default=0)
+    is_optional = models.BooleanField(default=False)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["sort_order", "id"]
+
+    def save(self, *args, **kwargs):
+        quantity = self.quantity or Decimal("0.00")
+        unit_price = self.unit_price or Decimal("0.00")
+        self.total = quantity * unit_price
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.service_name} - {self.budget.event}"
+
+
+class EventBudgetPayment(TimestampedModel):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pendiente"
+        APPROVED = "approved", "Aprobado"
+        REJECTED = "rejected", "Rechazado"
+        CANCELLED = "cancelled", "Cancelado"
+        REFUNDED = "refunded", "Reembolsado"
+        IN_PROCESS = "in_process", "En proceso"
+
+    budget = models.ForeignKey(EventBudget, on_delete=models.PROTECT, related_name="payments")
+    idempotency_key = models.CharField(max_length=120, unique=True, default=uuid.uuid4)
+    mp_preference_id = models.CharField(max_length=100, blank=True)
+    preference_init_point = models.URLField(max_length=1000, blank=True)
+    preference_sandbox_init_point = models.URLField(max_length=1000, blank=True)
+    mp_payment_id = models.CharField(max_length=100, blank=True)
+    mp_merchant_order_id = models.CharField(max_length=100, blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    status_detail = models.CharField(max_length=100, blank=True)
+    payment_method = models.CharField(max_length=50, blank=True)
+    payment_type = models.CharField(max_length=50, blank=True)
+    installments = models.PositiveIntegerField(default=1)
+    amount = models.DecimalField(max_digits=MONEY_MAX_DIGITS, decimal_places=MONEY_DECIMAL_PLACES)
+    currency = models.CharField(max_length=3, default=Account.Currency.ARS)
+    cash_movement = models.OneToOneField(
+        "CashMovement",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="event_budget_payment",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["mp_preference_id"],
+                condition=~models.Q(mp_preference_id=""),
+                name="unique_event_budget_mp_preference",
+            ),
+            models.UniqueConstraint(
+                fields=["mp_payment_id"],
+                condition=~models.Q(mp_payment_id=""),
+                name="unique_event_budget_mp_payment",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.budget.event} - {self.status} - {self.amount}"
+
+
+class EventBudgetPaymentWebhookLog(models.Model):
+    mp_notification_id = models.CharField(max_length=100)
+    deduplication_key = models.CharField(max_length=64, unique=True)
+    topic = models.CharField(max_length=50)
+    payload = models.JSONField(default=dict)
+    processed = models.BooleanField(default=False)
+    error = models.TextField(blank=True)
+    received_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.topic} - {self.mp_notification_id}"
 
 
 class EventStaffAssignment(TimestampedModel):

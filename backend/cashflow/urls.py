@@ -16,6 +16,11 @@ from .views import (
     EmployeePaymentViewSet,
     EmployeeRoleViewSet,
     EmployeeViewSet,
+    EventBudgetItemViewSet,
+    EventBudgetPaymentPreferenceAPIView,
+    EventBudgetPaymentViewSet,
+    EventBudgetPaymentWebhookAPIView,
+    EventBudgetViewSet,
     EventStaffAssignmentViewSet,
     EventViewSet,
     MovementCodeViewSet,
@@ -41,6 +46,9 @@ router.register("employees", EmployeeViewSet)
 router.register("employee-roles", EmployeeRoleViewSet)
 router.register("clients", ClientViewSet)
 router.register("events", EventViewSet)
+router.register("event-budgets", EventBudgetViewSet)
+router.register("event-budget-items", EventBudgetItemViewSet)
+router.register("event-budget-payments", EventBudgetPaymentViewSet)
 router.register("event-staff-assignments", EventStaffAssignmentViewSet)
 router.register("employee-payments", EmployeePaymentViewSet)
 router.register("tax-types", TaxTypeViewSet)
@@ -49,10 +57,12 @@ router.register("reminders", ReminderViewSet)
 router.register("reports", ReportsViewSet, basename="reports")
 
 urlpatterns = [
-    path("", include(router.urls)),
     path("auth/login/", LoginAPIView.as_view(), name="auth-login"),
     path("auth/me/", AuthStatusAPIView.as_view(), name="auth-me"),
     path("auth/logout/", LogoutAPIView.as_view(), name="auth-logout"),
     path("health/", HealthCheckAPIView.as_view(), name="health"),
     path("dashboard/", DashboardAPIView.as_view(), name="dashboard"),
+    path("event-budget-payments/create-preference/", EventBudgetPaymentPreferenceAPIView.as_view(), name="event-budget-payment-preference"),
+    path("event-budget-payments/webhook/", EventBudgetPaymentWebhookAPIView.as_view(), name="event-budget-payment-webhook"),
+    path("", include(router.urls)),
 ]

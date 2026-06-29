@@ -25,6 +25,10 @@ from .models import (
     EmployeePayment,
     EmployeeRole,
     Event,
+    EventBudget,
+    EventBudgetItem,
+    EventBudgetPayment,
+    EventBudgetPaymentWebhookLog,
     EventStaffAssignment,
     MovementCode,
     Provider,
@@ -45,6 +49,9 @@ from .serializers import (
     EmployeeRoleSerializer,
     EmployeeSerializer,
     EventSerializer,
+    EventBudgetItemSerializer,
+    EventBudgetPaymentSerializer,
+    EventBudgetSerializer,
     EventStaffAssignmentSerializer,
     MovementCodeSerializer,
     ProviderLedgerEntrySerializer,
@@ -59,10 +66,19 @@ from .services import (
     close_daily_cash_group,
     create_account_transfer,
     create_balance_adjustment,
+    create_event_budget_payment_preference,
+    build_mp_webhook_deduplication_key,
     get_dashboard_summary,
+    get_or_create_event_budget,
+    get_event_overview,
+    has_valid_mp_signature,
+    MercadoPagoAPIError,
+    MercadoPagoClient,
+    PaymentIntegrityError,
     register_employee_payment,
     register_provider_payment,
     register_tax_payment,
+    sync_event_budget_payment,
     void_cash_movement,
 )
 
@@ -284,9 +300,155 @@ class ClientViewSet(viewsets.ModelViewSet):
 class EventViewSet(viewsets.ModelViewSet):
     queryset = Event.objects.select_related("client")
     serializer_class = EventSerializer
-    filterset_fields = ["status", "event_date", "client"]
-    search_fields = ["name", "event_type", "notes", "client__name"]
-    ordering_fields = ["event_date", "name", "status"]
+    filterset_fields = ["status", "event_date", "client", "event_type", "internal_status"]
+    search_fields = [
+        "name",
+        "event_type",
+        "notes",
+        "client__name",
+        "venue_space",
+        "contact_name",
+        "contact_phone",
+        "internal_status",
+    ]
+    ordering_fields = ["event_date", "event_time", "name", "status", "client__name"]
+
+    @action(detail=True, methods=["get"])
+    def overview(self, request, pk=None):
+        event = self.get_object()
+        overview = get_event_overview(event)
+        return Response(
+            {
+                "event": self.get_serializer(event).data,
+                "linked_counts": overview["linked_counts"],
+                "financial": overview["financial"],
+                "service_snapshot": overview["service_snapshot"],
+                "budget_summary": overview["budget_summary"],
+            }
+        )
+
+    @action(detail=True, methods=["get"], url_path="budget")
+    def budget(self, request, pk=None):
+        budget = get_or_create_event_budget(self.get_object())
+        return Response(EventBudgetSerializer(budget).data)
+
+
+class EventBudgetViewSet(viewsets.ModelViewSet):
+    queryset = EventBudget.objects.select_related("event", "event__client")
+    serializer_class = EventBudgetSerializer
+    filterset_fields = ["event", "status"]
+    search_fields = ["event__name", "event__client__name", "notes", "optional_comments", "internal_notes"]
+    ordering_fields = ["updated_at", "created_at", "event__event_date"]
+
+
+class EventBudgetItemViewSet(viewsets.ModelViewSet):
+    queryset = EventBudgetItem.objects.select_related("budget", "budget__event")
+    serializer_class = EventBudgetItemSerializer
+    filterset_fields = ["budget", "budget__event", "category", "is_optional"]
+    search_fields = ["service_name", "category", "notes", "budget__event__name"]
+    ordering_fields = ["sort_order", "service_name", "total", "created_at"]
+
+
+class EventBudgetPaymentViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = EventBudgetPayment.objects.select_related("budget", "budget__event", "cash_movement", "cash_movement__account")
+    serializer_class = EventBudgetPaymentSerializer
+    filterset_fields = ["budget", "budget__event", "status", "currency"]
+    search_fields = ["budget__event__name", "mp_preference_id", "mp_payment_id", "status_detail"]
+    ordering_fields = ["created_at", "updated_at", "amount", "status"]
+
+
+class EventBudgetPaymentPreferenceAPIView(APIView):
+    def post(self, request):
+        budget = get_object_or_404(EventBudget, pk=request.data.get("budget"))
+        try:
+            payment = create_event_budget_payment_preference(budget)
+        except ValidationError as exc:
+            return validation_error_response(exc)
+        except MercadoPagoAPIError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        payload = EventBudgetPaymentSerializer(payment).data
+        payload["preference_id"] = payment.mp_preference_id
+        payload["init_point"] = payment.preference_init_point or None
+        payload["sandbox_init_point"] = payment.preference_sandbox_init_point or None
+        return Response(payload, status=status.HTTP_201_CREATED)
+
+
+class EventBudgetPaymentWebhookAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        payload = request.data if isinstance(request.data, dict) else {}
+        topic = str(
+            request.query_params.get("type")
+            or request.query_params.get("topic")
+            or payload.get("type")
+            or payload.get("topic")
+            or ""
+        )
+        notification_id = str(
+            payload.get("id")
+            or request.query_params.get("id")
+            or request.query_params.get("data.id")
+            or (payload.get("data") or {}).get("id")
+            or "unknown"
+        )
+        payment_resource_id = request.query_params.get("data.id") or str((payload.get("data") or {}).get("id") or "")
+        if not payment_resource_id and topic == "payment":
+            payment_resource_id = str(request.query_params.get("id") or payload.get("id") or "")
+        deduplication_key = build_mp_webhook_deduplication_key(topic or "unknown", notification_id, payment_resource_id, payload)
+        webhook_log, created = EventBudgetPaymentWebhookLog.objects.get_or_create(
+            deduplication_key=deduplication_key,
+            defaults={"mp_notification_id": notification_id, "topic": topic or "unknown", "payload": payload},
+        )
+        if not created and webhook_log.processed:
+            return Response(status=status.HTTP_200_OK)
+        if not has_valid_mp_signature(request, payload):
+            webhook_log.error = "invalid_signature"
+            webhook_log.save(update_fields=["error"])
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        if topic != "payment":
+            webhook_log.processed = True
+            webhook_log.save(update_fields=["processed"])
+            return Response(status=status.HTTP_200_OK)
+        if not payment_resource_id:
+            webhook_log.error = "missing_payment_id"
+            webhook_log.save(update_fields=["error"])
+            return Response(status=status.HTTP_200_OK)
+        try:
+            payment_data = MercadoPagoClient().get_payment(str(payment_resource_id))
+            payment = self._find_payment(payment_data)
+            if payment is None:
+                webhook_log.error = "payment_not_found"
+                webhook_log.save(update_fields=["error"])
+                return Response(status=status.HTTP_200_OK)
+            sync_event_budget_payment(payment.id, payment_data)
+            webhook_log.processed = True
+            webhook_log.error = ""
+            webhook_log.save(update_fields=["processed", "error"])
+        except PaymentIntegrityError as exc:
+            if "payment" in locals():
+                EventBudgetPayment.objects.filter(pk=payment.pk).update(status_detail="integrity_validation_failed")
+            webhook_log.error = f"payment_integrity_error: {exc}"
+            webhook_log.processed = True
+            webhook_log.save(update_fields=["error", "processed"])
+        except MercadoPagoAPIError as exc:
+            webhook_log.error = str(exc)
+            webhook_log.save(update_fields=["error"])
+            return Response(status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response(status=status.HTTP_200_OK)
+
+    def _find_payment(self, payment_data):
+        external_reference = str(payment_data.get("external_reference") or "")
+        if external_reference.startswith("event-budget-payment:"):
+            return EventBudgetPayment.objects.filter(pk=external_reference.rsplit(":", 1)[-1]).first()
+        metadata = payment_data.get("metadata") or {}
+        payment_id = metadata.get("event_budget_payment_id")
+        if payment_id:
+            return EventBudgetPayment.objects.filter(pk=payment_id).first()
+        preference_id = str(metadata.get("preference_id") or "")
+        if preference_id:
+            return EventBudgetPayment.objects.filter(mp_preference_id=preference_id).first()
+        return None
 
 
 class EventStaffAssignmentViewSet(viewsets.ModelViewSet):

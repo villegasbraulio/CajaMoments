@@ -12,6 +12,10 @@ from .models import (
     EmployeePayment,
     EmployeeRole,
     Event,
+    EventBudget,
+    EventBudgetItem,
+    EventBudgetPayment,
+    EventBudgetPaymentWebhookLog,
     EventStaffAssignment,
     MovementCode,
     Provider,
@@ -121,9 +125,47 @@ class ClientAdmin(AuditReadonlyMixin, admin.ModelAdmin):
 
 @admin.register(Event)
 class EventAdmin(AuditReadonlyMixin, admin.ModelAdmin):
-    list_display = ("name", "client", "event_type", "event_date", "status")
-    search_fields = ("name", "client__name", "event_type", "notes")
-    list_filter = ("status", "event_type", "event_date")
+    list_display = ("name", "client", "event_type", "event_date", "event_time", "venue_space", "status", "internal_status")
+    search_fields = ("name", "client__name", "event_type", "notes", "venue_space", "contact_name", "contact_phone", "internal_status")
+    list_filter = ("status", "event_type", "event_date", "internal_status")
+
+
+@admin.register(EventBudget)
+class EventBudgetAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("event", "status", "updated_at")
+    search_fields = ("event__name", "event__client__name", "notes", "optional_comments", "internal_notes")
+    list_filter = ("status",)
+
+
+@admin.register(EventBudgetItem)
+class EventBudgetItemAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("service_name", "budget", "category", "quantity", "unit_price", "total", "is_optional", "sort_order")
+    search_fields = ("service_name", "category", "notes", "budget__event__name")
+    list_filter = ("category", "is_optional")
+
+
+@admin.register(EventBudgetPayment)
+class EventBudgetPaymentAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("budget", "status", "amount", "currency", "cash_movement", "mp_preference_id", "mp_payment_id", "updated_at")
+    search_fields = ("budget__event__name", "mp_preference_id", "mp_payment_id", "status_detail")
+    list_filter = ("status", "currency")
+    readonly_fields = AuditReadonlyMixin.readonly_fields + (
+        "idempotency_key",
+        "mp_preference_id",
+        "preference_init_point",
+        "preference_sandbox_init_point",
+        "mp_payment_id",
+        "mp_merchant_order_id",
+        "cash_movement",
+    )
+
+
+@admin.register(EventBudgetPaymentWebhookLog)
+class EventBudgetPaymentWebhookLogAdmin(admin.ModelAdmin):
+    list_display = ("topic", "mp_notification_id", "processed", "received_at")
+    search_fields = ("mp_notification_id", "deduplication_key", "error")
+    list_filter = ("topic", "processed", "received_at")
+    readonly_fields = ("mp_notification_id", "deduplication_key", "topic", "payload", "processed", "error", "received_at")
 
 
 @admin.register(EventStaffAssignment)

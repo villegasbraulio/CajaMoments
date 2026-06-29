@@ -1,18 +1,23 @@
 from datetime import date
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from .models import (
     Account,
     CashMovement,
+    Client,
     Employee,
     EmployeeRole,
     Event,
+    EventBudget,
+    EventBudgetItem,
+    EventBudgetPayment,
     EventStaffAssignment,
     MovementCode,
     Provider,
@@ -26,9 +31,12 @@ from .services import (
     close_daily_cash_group,
     create_account_transfer,
     create_balance_adjustment,
+    create_event_budget_payment_preference,
+    get_event_overview,
     register_employee_payment,
     register_provider_payment,
     register_tax_payment,
+    sync_event_budget_payment,
     void_cash_movement,
 )
 
@@ -192,3 +200,201 @@ class AuthenticationApiTests(TestCase):
         me_response = self.client.get("/api/auth/me/")
         self.assertEqual(me_response.status_code, 200)
         self.assertEqual(me_response.data["user"]["username"], "owner")
+
+
+class EventModuleStageOneTests(TestCase):
+    def setUp(self):
+        call_command("seed_initial_data", verbosity=0)
+        self.client_api = APIClient()
+        self.user = get_user_model().objects.create_user(username="planner", password="secret123")
+        login_response = self.client_api.post("/api/auth/login/", {"username": "planner", "password": "secret123"}, format="json")
+        self.client_api.credentials(HTTP_AUTHORIZATION=f"Token {login_response.data['token']}")
+        self.client_obj = Client.objects.get(name="Cliente ejemplo")
+        self.event = Event.objects.get(name="Evento ejemplo")
+        self.cash = Account.objects.get(name="EFECTIVO")
+        self.provider = Provider.objects.first()
+        self.employee = Employee.objects.first()
+        self.role = EmployeeRole.objects.get(name="Mozo")
+
+    def test_can_create_event_with_extended_stage_one_fields(self):
+        response = self.client_api.post(
+            "/api/events/",
+            {
+                "client": self.client_obj.id,
+                "name": "Casamiento Abril",
+                "event_type": "Casamiento",
+                "event_date": "2026-07-20",
+                "event_time": "21:30:00",
+                "venue_space": "Salon principal",
+                "guest_count_dinner": 180,
+                "guest_count_toast": 220,
+                "main_table_notes": "Mesa principal para 12 personas",
+                "tableware_notes": "Manteleria blanca y dorada",
+                "protocol_notes": "Entrada con recepcion de fotos",
+                "beverage_notes": "Barra libre despues del brindis",
+                "additional_notes": "Cabina 360 y livings exteriores",
+                "operational_notes": "Verificar montaje el dia anterior",
+                "internal_status": "Listo para presupuestar",
+                "contact_name": "Lucia Perez",
+                "contact_phone": "2615551234",
+                "contact_email": "lucia@example.com",
+                "status": Event.Status.CONFIRMED,
+                "notes": "Evento de alto volumen",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["venue_space"], "Salon principal")
+        self.assertEqual(response.data["guest_count_total"], 220)
+        self.assertEqual(response.data["client_name"], self.client_obj.name)
+
+    def test_event_overview_returns_operational_and_financial_summary(self):
+        EventStaffAssignment.objects.create(
+            event=self.event,
+            employee=self.employee,
+            role=self.role,
+            work_date=date(2026, 6, 20),
+            base_amount=Decimal("120.00"),
+        )
+        register_provider_payment(self.provider, self.cash, Decimal("80.00"), date(2026, 6, 20), event=self.event)
+        overview = get_event_overview(self.event)
+        self.assertEqual(overview["linked_counts"]["assignments"], 1)
+        self.assertEqual(overview["financial"]["expense"], Decimal("80.00"))
+        self.assertEqual(overview["financial"]["staffing_cost"], Decimal("120.00"))
+
+        response = self.client_api.get(f"/api/events/{self.event.id}/overview/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["linked_counts"]["assignments"], 1)
+        self.assertIn("service_snapshot", response.data)
+
+
+class EventBudgetStageTwoTests(TestCase):
+    def setUp(self):
+        call_command("seed_initial_data", verbosity=0)
+        self.client_api = APIClient()
+        self.user = get_user_model().objects.create_user(username="budgeter", password="secret123")
+        login_response = self.client_api.post("/api/auth/login/", {"username": "budgeter", "password": "secret123"}, format="json")
+        self.client_api.credentials(HTTP_AUTHORIZATION=f"Token {login_response.data['token']}")
+        self.event = Event.objects.get(name="Evento ejemplo")
+
+    def test_budget_endpoint_creates_budget_if_missing(self):
+        self.assertFalse(hasattr(self.event, "budget"))
+        response = self.client_api.get(f"/api/events/{self.event.id}/budget/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["event"], self.event.id)
+        self.assertEqual(response.data["item_count"], 0)
+        self.assertTrue(EventBudget.objects.filter(event=self.event).exists())
+
+    def test_budget_item_calculates_total_and_event_overview_exposes_summary(self):
+        budget = EventBudget.objects.create(event=self.event)
+        response = self.client_api.post(
+            "/api/event-budget-items/",
+            {
+                "budget": budget.id,
+                "service_name": "Personas a la cena",
+                "category": "Servicio",
+                "quantity": "100.00",
+                "unit_label": "personas",
+                "unit_price": "700.00",
+                "sort_order": 1,
+                "is_optional": False,
+                "notes": "Menu principal",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["total"], "70000.00")
+
+        EventBudgetItem.objects.create(
+            budget=budget,
+            service_name="Cabina 360",
+            category="Opcional",
+            quantity=Decimal("1.00"),
+            unit_price=Decimal("8500.00"),
+            is_optional=True,
+            sort_order=2,
+        )
+
+        budget_response = self.client_api.get(f"/api/events/{self.event.id}/budget/")
+        self.assertEqual(budget_response.status_code, 200)
+        self.assertEqual(Decimal(str(budget_response.data["subtotal"])), Decimal("70000.00"))
+        self.assertEqual(Decimal(str(budget_response.data["optional_total"])), Decimal("8500.00"))
+        self.assertEqual(Decimal(str(budget_response.data["grand_total"])), Decimal("78500.00"))
+
+        overview_response = self.client_api.get(f"/api/events/{self.event.id}/overview/")
+        self.assertEqual(overview_response.status_code, 200)
+        self.assertEqual(Decimal(str(overview_response.data["budget_summary"]["grand_total"])), Decimal("78500.00"))
+
+
+class EventBudgetPaymentStageThreeTests(TestCase):
+    def setUp(self):
+        call_command("seed_initial_data", verbosity=0)
+        self.client_api = APIClient()
+        self.user = get_user_model().objects.create_user(username="collector", password="secret123")
+        login_response = self.client_api.post("/api/auth/login/", {"username": "collector", "password": "secret123"}, format="json")
+        self.client_api.credentials(HTTP_AUTHORIZATION=f"Token {login_response.data['token']}")
+        self.event = Event.objects.get(name="Evento ejemplo")
+        self.budget = EventBudget.objects.create(event=self.event)
+        EventBudgetItem.objects.create(
+            budget=self.budget,
+            service_name="Servicio integral",
+            quantity=Decimal("2.00"),
+            unit_price=Decimal("1000.00"),
+        )
+
+    @patch("cashflow.services.MercadoPagoClient")
+    def test_create_preference_records_payment_attempt(self, mercado_pago_client):
+        mercado_pago_client.return_value.create_budget_preference.return_value = {
+            "id": "pref_123",
+            "init_point": "https://www.mercadopago.com.ar/checkout/v1/redirect?pref_id=pref_123",
+            "sandbox_init_point": "https://sandbox.mercadopago.com.ar/checkout/v1/redirect?pref_id=pref_123",
+        }
+        payment = create_event_budget_payment_preference(self.budget)
+        self.assertEqual(payment.amount, Decimal("2000.00"))
+        self.assertEqual(payment.mp_preference_id, "pref_123")
+
+        response = self.client_api.post("/api/event-budget-payments/create-preference/", {"budget": self.budget.id}, format="json")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["preference_id"], "pref_123")
+        self.assertEqual(EventBudgetPayment.objects.count(), 1)
+
+    def test_sync_approved_payment_approves_budget(self):
+        payment = EventBudgetPayment.objects.create(
+            budget=self.budget,
+            amount=Decimal("2000.00"),
+            currency="ARS",
+            mp_preference_id="pref_123",
+        )
+        payload = {
+            "id": "pay_123",
+            "status": "approved",
+            "external_reference": f"event-budget-payment:{payment.id}",
+            "transaction_amount": "2000.00",
+            "currency_id": "ARS",
+            "payment_method_id": "visa",
+            "payment_type_id": "credit_card",
+            "installments": 1,
+        }
+        sync_event_budget_payment(payment.id, payload)
+        sync_event_budget_payment(payment.id, payload)
+        payment.refresh_from_db()
+        self.budget.refresh_from_db()
+        self.assertEqual(payment.status, EventBudgetPayment.Status.APPROVED)
+        self.assertEqual(self.budget.status, EventBudget.Status.APPROVED)
+        self.assertIsNotNone(payment.cash_movement)
+        self.assertEqual(payment.cash_movement.amount, Decimal("2000.00"))
+        self.assertEqual(payment.cash_movement.account.name, "MERCADO PAGO")
+        self.assertEqual(payment.cash_movement.code.code, "COBRO_EVENTO")
+        self.assertEqual(
+            CashMovement.objects.filter(event=self.event, code__code="COBRO_EVENTO", amount=Decimal("2000.00")).count(),
+            1,
+        )
+
+    @override_settings(MERCADOPAGO_WEBHOOK_SIGNATURE_REQUIRED=True, MERCADOPAGO_WEBHOOK_SECRET="secret")
+    def test_webhook_rejects_invalid_signature(self):
+        response = self.client_api.post(
+            "/api/event-budget-payments/webhook/?type=payment&data.id=pay_123",
+            {"type": "payment", "data": {"id": "pay_123"}},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
