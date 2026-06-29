@@ -27,6 +27,8 @@ A decision based only on an unconfirmed `AGENT_ASSUMPTION` cannot be `accepted`.
 | [ADR-0001](0001-agent-memory-and-decision-records.md) | Maintain persistent agent memory and decision provenance | accepted | USER_INSTRUCTION | 2026-06-25 | — |
 | [ADR-0002](0002-mercadopago-for-event-budget-payments.md) | Use Mercado Pago for event budget payments | accepted | USER_INSTRUCTION, REPOSITORY_EVIDENCE | 2026-06-28 | — |
 | [ADR-0003](0003-auto-record-approved-budget-payments.md) | Auto-record approved budget payments as cash movements | accepted | USER_INSTRUCTION, REPOSITORY_EVIDENCE | 2026-06-28 | — |
+| [ADR-0004](0004-staff-only-operational-mutations.md) | Staff-only operational mutations | accepted | USER_INSTRUCTION, REPOSITORY_EVIDENCE | 2026-06-29 | — |
+| [ADR-0005](0005-reverse-refunded-budget-payments.md) | Reverse refunded budget payments | accepted | USER_INSTRUCTION, REPOSITORY_EVIDENCE, AGENT_ASSUMPTION | 2026-06-29 | — |
 
 ## Creating an ADR
 

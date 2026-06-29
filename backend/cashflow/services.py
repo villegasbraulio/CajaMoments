@@ -12,6 +12,7 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
+from django.utils.dateparse import parse_date as parse_iso_date, parse_datetime
 
 from .models import (
     Account,
@@ -431,13 +432,32 @@ def sync_event_budget_payment(payment_id, payment_data):
         payment.budget.status = EventBudget.Status.APPROVED
         payment.budget.save(update_fields=["status", "updated_at"])
     if payment.status == EventBudgetPayment.Status.APPROVED:
-        ensure_event_budget_payment_cash_movement(payment)
+        ensure_event_budget_payment_cash_movement(payment, payment_data)
+    elif raw_status in {"refunded", "charged_back"}:
+        ensure_event_budget_payment_reversal(payment, payment_data)
     return payment
 
 
-def ensure_event_budget_payment_cash_movement(payment):
+def _payment_accounting_date(payment_data):
+    for key in ("date_approved", "money_release_date", "date_created"):
+        value = payment_data.get(key)
+        if not value:
+            continue
+        parsed_datetime = parse_datetime(str(value))
+        if parsed_datetime:
+            if timezone.is_aware(parsed_datetime):
+                return timezone.localtime(parsed_datetime).date()
+            return parsed_datetime.date()
+        parsed_date = parse_iso_date(str(value)[:10])
+        if parsed_date:
+            return parsed_date
+    return timezone.localdate()
+
+
+def ensure_event_budget_payment_cash_movement(payment, payment_data=None):
     if payment.cash_movement_id:
         return payment.cash_movement
+    payment_data = payment_data or {}
     account_name = str(settings.MERCADOPAGO_ACCOUNT_NAME or "MERCADO PAGO").strip() or "MERCADO PAGO"
     account, _ = Account.objects.get_or_create(
         name=account_name,
@@ -460,7 +480,7 @@ def ensure_event_budget_payment_cash_movement(payment):
         },
     )
     movement = CashMovement.objects.create(
-        date_payment=timezone.localdate(),
+        date_payment=_payment_accounting_date(payment_data),
         description=f"Cobro Mercado Pago - {payment.budget.event.name}",
         voucher_number=payment.mp_payment_id,
         movement_type=CashMovement.MovementType.INCOME,
@@ -475,6 +495,36 @@ def ensure_event_budget_payment_cash_movement(payment):
     payment.cash_movement = movement
     payment.save(update_fields=["cash_movement", "updated_at"])
     return movement
+
+
+def ensure_event_budget_payment_reversal(payment, payment_data=None):
+    if not payment.cash_movement_id:
+        return None
+    original = payment.cash_movement
+    voucher_number = f"{payment.mp_payment_id or original.voucher_number}-reversal"
+    existing = CashMovement.objects.filter(
+        account=original.account,
+        event=payment.budget.event,
+        voucher_number=voucher_number,
+        movement_type=CashMovement.MovementType.EXPENSE,
+        amount=payment.amount,
+    ).first()
+    if existing:
+        return existing
+    code = MovementCode.objects.filter(code="AJUSTE_CAJA").first() or original.code
+    return CashMovement.objects.create(
+        date_payment=_payment_accounting_date(payment_data or {}),
+        description=f"Reversa Mercado Pago - {payment.budget.event.name}",
+        voucher_number=voucher_number,
+        movement_type=CashMovement.MovementType.EXPENSE,
+        amount=payment.amount,
+        account=original.account,
+        code=code,
+        event=payment.budget.event,
+        payment_method="Mercado Pago",
+        status=CashMovement.Status.CONFIRMED,
+        notes=f"Reversa de movimiento #{original.id}",
+    )
 
 
 def _validate_approved_budget_payment(payment, payment_data):

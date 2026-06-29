@@ -201,12 +201,22 @@ class AuthenticationApiTests(TestCase):
         self.assertEqual(me_response.status_code, 200)
         self.assertEqual(me_response.data["user"]["username"], "owner")
 
+    def test_non_staff_user_cannot_mutate_operational_resources(self):
+        login_response = self.client.post("/api/auth/login/", {"username": "owner", "password": "secret123"}, format="json")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {login_response.data['token']}")
+        response = self.client.post(
+            "/api/accounts/",
+            {"name": "Cuenta prueba", "type": "CASH", "currency": "ARS", "initial_balance": "0.00"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+
 
 class EventModuleStageOneTests(TestCase):
     def setUp(self):
         call_command("seed_initial_data", verbosity=0)
         self.client_api = APIClient()
-        self.user = get_user_model().objects.create_user(username="planner", password="secret123")
+        self.user = get_user_model().objects.create_user(username="planner", password="secret123", is_staff=True)
         login_response = self.client_api.post("/api/auth/login/", {"username": "planner", "password": "secret123"}, format="json")
         self.client_api.credentials(HTTP_AUTHORIZATION=f"Token {login_response.data['token']}")
         self.client_obj = Client.objects.get(name="Cliente ejemplo")
@@ -272,7 +282,7 @@ class EventBudgetStageTwoTests(TestCase):
     def setUp(self):
         call_command("seed_initial_data", verbosity=0)
         self.client_api = APIClient()
-        self.user = get_user_model().objects.create_user(username="budgeter", password="secret123")
+        self.user = get_user_model().objects.create_user(username="budgeter", password="secret123", is_staff=True)
         login_response = self.client_api.post("/api/auth/login/", {"username": "budgeter", "password": "secret123"}, format="json")
         self.client_api.credentials(HTTP_AUTHORIZATION=f"Token {login_response.data['token']}")
         self.event = Event.objects.get(name="Evento ejemplo")
@@ -330,7 +340,7 @@ class EventBudgetPaymentStageThreeTests(TestCase):
     def setUp(self):
         call_command("seed_initial_data", verbosity=0)
         self.client_api = APIClient()
-        self.user = get_user_model().objects.create_user(username="collector", password="secret123")
+        self.user = get_user_model().objects.create_user(username="collector", password="secret123", is_staff=True)
         login_response = self.client_api.post("/api/auth/login/", {"username": "collector", "password": "secret123"}, format="json")
         self.client_api.credentials(HTTP_AUTHORIZATION=f"Token {login_response.data['token']}")
         self.event = Event.objects.get(name="Evento ejemplo")
@@ -374,6 +384,7 @@ class EventBudgetPaymentStageThreeTests(TestCase):
             "payment_method_id": "visa",
             "payment_type_id": "credit_card",
             "installments": 1,
+            "date_approved": "2026-06-12T10:20:30.000-03:00",
         }
         sync_event_budget_payment(payment.id, payload)
         sync_event_budget_payment(payment.id, payload)
@@ -383,12 +394,45 @@ class EventBudgetPaymentStageThreeTests(TestCase):
         self.assertEqual(self.budget.status, EventBudget.Status.APPROVED)
         self.assertIsNotNone(payment.cash_movement)
         self.assertEqual(payment.cash_movement.amount, Decimal("2000.00"))
+        self.assertEqual(payment.cash_movement.date_payment, date(2026, 6, 12))
         self.assertEqual(payment.cash_movement.account.name, "MERCADO PAGO")
         self.assertEqual(payment.cash_movement.code.code, "COBRO_EVENTO")
         self.assertEqual(
             CashMovement.objects.filter(event=self.event, code__code="COBRO_EVENTO", amount=Decimal("2000.00")).count(),
             1,
         )
+
+    def test_refunded_payment_creates_one_reversal_movement(self):
+        payment = EventBudgetPayment.objects.create(
+            budget=self.budget,
+            amount=Decimal("2000.00"),
+            currency="ARS",
+            mp_preference_id="pref_123",
+        )
+        approved_payload = {
+            "id": "pay_123",
+            "status": "approved",
+            "external_reference": f"event-budget-payment:{payment.id}",
+            "transaction_amount": "2000.00",
+            "currency_id": "ARS",
+            "date_approved": "2026-06-12T10:20:30.000-03:00",
+        }
+        refund_payload = {
+            "id": "pay_123",
+            "status": "refunded",
+            "date_approved": "2026-06-13T09:00:00.000-03:00",
+        }
+        sync_event_budget_payment(payment.id, approved_payload)
+        sync_event_budget_payment(payment.id, refund_payload)
+        sync_event_budget_payment(payment.id, refund_payload)
+
+        payment.refresh_from_db()
+        reversal = CashMovement.objects.get(voucher_number="pay_123-reversal")
+        self.assertEqual(payment.status, EventBudgetPayment.Status.REFUNDED)
+        self.assertEqual(reversal.movement_type, CashMovement.MovementType.EXPENSE)
+        self.assertEqual(reversal.amount, Decimal("2000.00"))
+        self.assertEqual(reversal.date_payment, date(2026, 6, 13))
+        self.assertEqual(CashMovement.objects.filter(voucher_number="pay_123-reversal").count(), 1)
 
     @override_settings(MERCADOPAGO_WEBHOOK_SIGNATURE_REQUIRED=True, MERCADOPAGO_WEBHOOK_SECRET="secret")
     def test_webhook_rejects_invalid_signature(self):

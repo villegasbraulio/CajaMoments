@@ -9,7 +9,7 @@ from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, SAFE_METHODS, BasePermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -105,7 +105,15 @@ def validation_error_response(exc):
     return Response({"detail": exc.messages if hasattr(exc, "messages") else str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+class ReadOnlyOrStaff(BasePermission):
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
+            return bool(request.user and request.user.is_authenticated)
+        return bool(request.user and request.user.is_authenticated and request.user.is_staff)
+
+
 class AccountViewSet(viewsets.ModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = Account.objects.all()
     serializer_class = AccountSerializer
     search_fields = ["name", "notes"]
@@ -135,6 +143,7 @@ class AccountViewSet(viewsets.ModelViewSet):
 
 
 class MovementCodeViewSet(viewsets.ModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = MovementCode.objects.all()
     serializer_class = MovementCodeSerializer
     search_fields = ["code", "name", "category"]
@@ -142,6 +151,7 @@ class MovementCodeViewSet(viewsets.ModelViewSet):
 
 
 class CashMovementViewSet(viewsets.ModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = CashMovement.objects.select_related(
         "account",
         "code",
@@ -176,6 +186,7 @@ class CashMovementViewSet(viewsets.ModelViewSet):
 
 
 class AccountTransferViewSet(viewsets.ModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = AccountTransfer.objects.select_related("from_account", "to_account")
     serializer_class = AccountTransferSerializer
     search_fields = ["description"]
@@ -198,6 +209,7 @@ class AccountTransferViewSet(viewsets.ModelViewSet):
 
 
 class DailyCashCloseGroupViewSet(viewsets.ModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = DailyCashCloseGroup.objects.prefetch_related("account_closes__account")
     serializer_class = DailyCashCloseGroupSerializer
     filterset_fields = ["date", "status"]
@@ -237,6 +249,7 @@ class DailyAccountCloseViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class ProviderViewSet(viewsets.ModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = Provider.objects.all()
     serializer_class = ProviderSerializer
     search_fields = ["name", "category", "cuit", "phone", "email"]
@@ -269,6 +282,7 @@ class ProviderViewSet(viewsets.ModelViewSet):
 
 
 class ProviderLedgerEntryViewSet(viewsets.ModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = ProviderLedgerEntry.objects.select_related("provider", "event", "cash_movement")
     serializer_class = ProviderLedgerEntrySerializer
     filterset_class = ProviderLedgerEntryFilter
@@ -277,6 +291,7 @@ class ProviderLedgerEntryViewSet(viewsets.ModelViewSet):
 
 
 class EmployeeViewSet(viewsets.ModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = Employee.objects.all()
     serializer_class = EmployeeSerializer
     search_fields = ["first_name", "last_name", "alias", "phone", "document_number"]
@@ -284,6 +299,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
 
 
 class EmployeeRoleViewSet(viewsets.ModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = EmployeeRole.objects.all()
     serializer_class = EmployeeRoleSerializer
     search_fields = ["name"]
@@ -291,6 +307,7 @@ class EmployeeRoleViewSet(viewsets.ModelViewSet):
 
 
 class ClientViewSet(viewsets.ModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = Client.objects.all()
     serializer_class = ClientSerializer
     search_fields = ["name", "phone", "email"]
@@ -298,6 +315,7 @@ class ClientViewSet(viewsets.ModelViewSet):
 
 
 class EventViewSet(viewsets.ModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = Event.objects.select_related("client")
     serializer_class = EventSerializer
     filterset_fields = ["status", "event_date", "client", "event_type", "internal_status"]
@@ -334,6 +352,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
 
 class EventBudgetViewSet(viewsets.ModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = EventBudget.objects.select_related("event", "event__client")
     serializer_class = EventBudgetSerializer
     filterset_fields = ["event", "status"]
@@ -342,6 +361,7 @@ class EventBudgetViewSet(viewsets.ModelViewSet):
 
 
 class EventBudgetItemViewSet(viewsets.ModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = EventBudgetItem.objects.select_related("budget", "budget__event")
     serializer_class = EventBudgetItemSerializer
     filterset_fields = ["budget", "budget__event", "category", "is_optional"]
@@ -358,6 +378,8 @@ class EventBudgetPaymentViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class EventBudgetPaymentPreferenceAPIView(APIView):
+    permission_classes = [ReadOnlyOrStaff]
+
     def post(self, request):
         budget = get_object_or_404(EventBudget, pk=request.data.get("budget"))
         try:
@@ -452,6 +474,7 @@ class EventBudgetPaymentWebhookAPIView(APIView):
 
 
 class EventStaffAssignmentViewSet(viewsets.ModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = EventStaffAssignment.objects.select_related("event", "employee", "role")
     serializer_class = EventStaffAssignmentSerializer
     filterset_fields = ["event", "employee", "role", "status", "work_date"]
@@ -460,6 +483,7 @@ class EventStaffAssignmentViewSet(viewsets.ModelViewSet):
 
 
 class EmployeePaymentViewSet(viewsets.ModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = EmployeePayment.objects.select_related("employee", "event", "assignment", "cash_movement")
     serializer_class = EmployeePaymentSerializer
     filterset_fields = ["employee", "event", "assignment", "payment_date"]
@@ -486,6 +510,7 @@ class EmployeePaymentViewSet(viewsets.ModelViewSet):
 
 
 class TaxTypeViewSet(viewsets.ModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = TaxType.objects.all()
     serializer_class = TaxTypeSerializer
     search_fields = ["name", "description"]
@@ -493,6 +518,7 @@ class TaxTypeViewSet(viewsets.ModelViewSet):
 
 
 class TaxPaymentViewSet(viewsets.ModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = TaxPayment.objects.select_related("tax_type", "account", "cash_movement")
     serializer_class = TaxPaymentSerializer
     filterset_fields = ["tax_type", "account", "payment_date", "period"]
@@ -520,6 +546,7 @@ class TaxPaymentViewSet(viewsets.ModelViewSet):
 
 
 class ReminderViewSet(viewsets.ModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = Reminder.objects.select_related("related_tax_payment__tax_type", "related_event", "related_provider")
     serializer_class = ReminderSerializer
     filterset_class = ReminderFilter

@@ -145,6 +145,12 @@ Variables importantes backend:
 - `ALLOWED_HOSTS`
 - `CORS_ALLOWED_ORIGINS`
 - `CSRF_TRUSTED_ORIGINS`
+- `BACKEND_URL`
+- `FRONTEND_URL`
+- `MERCADOPAGO_ACCESS_TOKEN`
+- `MERCADOPAGO_WEBHOOK_SECRET`
+- `MERCADOPAGO_COLLECTOR_ID`
+- `MERCADOPAGO_ACCOUNT_NAME`
 
 Variable importante frontend:
 
@@ -178,6 +184,7 @@ Si NO usas `--skip-examples`, tambien carga:
 - Los proveedores pueden quedar con saldo negativo: eso representa saldo a favor o pago adelantado.
 - USD es una cuenta separada y no se convierte a ARS en Fase 1.
 - La logica de negocio vive en `cashflow/services.py`, no incrustada en views.
+- Los usuarios autenticados pueden consultar; las altas, ediciones y anulaciones operativas requieren `is_staff`.
 - Los endpoints DRF quedan listos para que el frontend evolucione sin rehacer el dominio.
 - En produccion se usa `DATABASE_URL` para PostgreSQL y `WhiteNoise` para estaticos del backend.
 - La API requiere autenticacion por token, salvo login y healthcheck.

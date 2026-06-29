@@ -40,7 +40,8 @@ function unwrap(data) {
 
 async function api(path, options = {}) {
   const token = options.token ?? localStorage.getItem(TOKEN_STORAGE_KEY);
-  const response = await fetch(`${API_BASE}${path}`, {
+  const url = String(path).startsWith("http") ? path : `${API_BASE}${path}`;
+  const response = await fetch(url, {
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -70,6 +71,17 @@ async function api(path, options = {}) {
   } catch {
     return rawBody;
   }
+}
+
+async function apiList(path) {
+  const rows = [];
+  let next = path;
+  while (next) {
+    const data = await api(next);
+    rows.push(...unwrap(data));
+    next = Array.isArray(data) ? null : data?.next || null;
+  }
+  return rows;
 }
 
 function money(value, currency = "ARS") {
@@ -348,28 +360,28 @@ function App() {
 
   async function loadRefs() {
     const [accounts, movementCodes, providers, employees, roles, clients, events, eventBudgetPayments, assignments, taxTypes] = await Promise.all([
-      api("/accounts/"),
-      api("/movement-codes/"),
-      api("/providers/"),
-      api("/employees/"),
-      api("/employee-roles/"),
-      api("/clients/"),
-      api("/events/"),
-      api("/event-budget-payments/"),
-      api("/event-staff-assignments/"),
-      api("/tax-types/"),
+      apiList("/accounts/"),
+      apiList("/movement-codes/"),
+      apiList("/providers/"),
+      apiList("/employees/"),
+      apiList("/employee-roles/"),
+      apiList("/clients/"),
+      apiList("/events/"),
+      apiList("/event-budget-payments/"),
+      apiList("/event-staff-assignments/"),
+      apiList("/tax-types/"),
     ]);
     setRefs({
-      accounts: unwrap(accounts),
-      movementCodes: unwrap(movementCodes),
-      providers: unwrap(providers),
-      employees: unwrap(employees),
-      roles: unwrap(roles),
-      clients: unwrap(clients),
-      events: unwrap(events),
-      eventBudgetPayments: unwrap(eventBudgetPayments),
-      assignments: unwrap(assignments),
-      taxTypes: unwrap(taxTypes),
+      accounts,
+      movementCodes,
+      providers,
+      employees,
+      roles,
+      clients,
+      events,
+      eventBudgetPayments,
+      assignments,
+      taxTypes,
     });
   }
 
