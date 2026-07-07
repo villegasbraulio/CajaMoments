@@ -22,6 +22,7 @@ from .models import (
     AccountTransfer,
     AuditLogEntry,
     CashMovement,
+    Client,
     DailyAccountClose,
     DailyCashCloseGroup,
     Employee,
@@ -366,11 +367,12 @@ class MercadoPagoClient:
         frontend_url = _resolve_public_base_url(settings.FRONTEND_URL)
         if not frontend_url:
             return {}
-        query = urlencode({"event": payment.budget.event_id, "budget": payment.budget_id})
+        query = urlencode({"payment": payment.id})
+        token = payment.budget.event.public_payment_token
         return {
-            "success": f"{frontend_url}/?payment_status=approved&{query}",
-            "failure": f"{frontend_url}/?payment_status=failure&{query}",
-            "pending": f"{frontend_url}/?payment_status=pending&{query}",
+            "success": f"{frontend_url}/pagar-evento/{token}/?payment_status=approved&{query}",
+            "failure": f"{frontend_url}/pagar-evento/{token}/?payment_status=failure&{query}",
+            "pending": f"{frontend_url}/pagar-evento/{token}/?payment_status=pending&{query}",
         }
 
     def _build_notification_url(self):
@@ -433,7 +435,15 @@ def _extract_mp_error(body, fallback_message):
     return fallback_message
 
 
-def _budget_payment_amount(budget, budget_item=None):
+EVENT_BASE_ITEM_NAME = "Evento"
+
+
+def _budget_payment_amount(budget, budget_item=None, amount=None):
+    if amount is not None and amount != "":
+        amount = Decimal(str(amount))
+        if amount <= 0:
+            raise ValidationError("El importe debe ser mayor a cero.")
+        return amount
     if budget_item:
         if budget_item.budget_id != budget.id:
             raise ValidationError("El item no pertenece al presupuesto.")
@@ -442,14 +452,14 @@ def _budget_payment_amount(budget, budget_item=None):
 
 
 @transaction.atomic
-def create_event_budget_payment_preference(budget, budget_item=None):
+def create_event_budget_payment_preference(budget, budget_item=None, amount=None):
     if not isinstance(budget, EventBudget):
         budget = EventBudget.objects.select_for_update().select_related("event", "event__client").get(pk=budget)
     else:
         budget = EventBudget.objects.select_for_update().select_related("event", "event__client").get(pk=budget.pk)
     if budget_item and not isinstance(budget_item, EventBudgetItem):
         budget_item = EventBudgetItem.objects.select_related("budget").get(pk=budget_item)
-    amount = _budget_payment_amount(budget, budget_item)
+    amount = _budget_payment_amount(budget, budget_item, amount)
     if amount <= 0:
         raise ValidationError("El presupuesto no tiene importe para cobrar.")
     reusable = (
@@ -480,6 +490,107 @@ def create_event_budget_payment_preference(budget, budget_item=None):
                 "updated_at",
             ]
         )
+    return payment
+
+
+@transaction.atomic
+def set_event_base_amount(event, amount):
+    if not isinstance(event, Event):
+        event = Event.objects.select_for_update().get(pk=event)
+    amount = Decimal(str(amount or "0.00"))
+    if amount < 0:
+        raise ValidationError("El monto del evento no puede ser negativo.")
+    budget = get_or_create_event_budget(event)
+    item, _created = EventBudgetItem.objects.update_or_create(
+        budget=budget,
+        service_name=EVENT_BASE_ITEM_NAME,
+        is_optional=False,
+        defaults={
+            "category": "Base",
+            "quantity": Decimal("1.00"),
+            "unit_label": "evento",
+            "unit_price": amount,
+            "sort_order": 0,
+            "notes": "Monto base del evento.",
+        },
+    )
+    return item
+
+
+@transaction.atomic
+def create_event_with_client_and_amount(event_data, client_data, amount=None, user=None):
+    client_name = str(client_data.get("name") or event_data.get("contact_name") or "").strip()
+    if not client_name:
+        raise ValidationError("El nombre del cliente es obligatorio.")
+    client = Client.objects.create(
+        name=client_name,
+        phone=str(client_data.get("phone") or "").strip(),
+        email=str(client_data.get("email") or "").strip(),
+        notes=str(client_data.get("notes") or "").strip(),
+    )
+    event = Event.objects.create(client=client, **event_data)
+    if amount not in (None, ""):
+        set_event_base_amount(event, amount)
+    audit_log(user, "event_client_create", event, f"Cliente #{client.id} creado con el evento.")
+    return event
+
+
+@transaction.atomic
+def register_event_payment(event, account, amount, payment_date=None, payment_method="Manual", description="", is_deposit=False, budget_item=None, user=None):
+    if not isinstance(event, Event):
+        event = Event.objects.select_for_update().get(pk=event)
+    if event.closed_at:
+        raise ValidationError("El evento esta cerrado.")
+    if not isinstance(account, Account):
+        account = Account.objects.get(pk=account)
+    if budget_item and not isinstance(budget_item, EventBudgetItem):
+        budget_item = EventBudgetItem.objects.select_related("budget").get(pk=budget_item)
+    budget = get_or_create_event_budget(event)
+    if budget_item and budget_item.budget_id != budget.id:
+        raise ValidationError("El item no pertenece al evento.")
+    payment_date = payment_date or timezone.localdate()
+    ensure_account_day_is_open(account, payment_date)
+    amount = Decimal(str(amount))
+    if amount <= 0:
+        raise ValidationError("El importe debe ser mayor a cero.")
+    payment = EventBudgetPayment.objects.create(
+        budget=budget,
+        budget_item=budget_item,
+        status=EventBudgetPayment.Status.APPROVED,
+        amount=amount,
+        currency=account.currency,
+        payment_method=payment_method,
+    )
+    code, _ = MovementCode.objects.get_or_create(
+        code="SEÑA_EVENTO" if is_deposit else "COBRO_EVENTO",
+        defaults={
+            "name": "Seña de evento" if is_deposit else "Cobro de evento",
+            "movement_type": MovementCode.MovementKind.INCOME,
+            "category": "Eventos",
+            "requires_event": True,
+            "active": True,
+        },
+    )
+    movement = CashMovement.objects.create(
+        date_payment=payment_date,
+        description=description or ("Seña de evento" if is_deposit else "Cobro de evento"),
+        movement_type=CashMovement.MovementType.INCOME,
+        amount=amount,
+        account=account,
+        code=code,
+        event=event,
+        payment_method=payment_method,
+        status=CashMovement.Status.CONFIRMED,
+        notes=f"Pago presupuesto #{budget.id}" + (f" - Item #{budget_item.id}" if budget_item else ""),
+        created_by=user,
+        updated_by=user,
+    )
+    payment.cash_movement = movement
+    payment.save(update_fields=["cash_movement", "updated_at"])
+    if is_deposit and event.status == Event.Status.DRAFT:
+        event.status = Event.Status.SIGNALED
+        event.save(update_fields=["status", "updated_at"])
+    audit_log(user, "event_payment", movement, f"Evento #{event.id}")
     return payment
 
 
@@ -715,14 +826,16 @@ def create_ticket_purchase_preference(graduation_event, graduate, quantity, emai
     return purchase
 
 
-def create_graduation_ticket_price(graduation_event, price, valid_from=None, notes=""):
+def create_graduation_ticket_price(graduation_event, price, valid_from=None, valid_until=None, notes=""):
     if not isinstance(graduation_event, GraduationEvent):
         graduation_event = GraduationEvent.objects.get(pk=graduation_event)
     valid_from = valid_from or timezone.localdate().replace(day=1)
+    if valid_until and valid_until < valid_from:
+        raise ValidationError("La vigencia hasta no puede ser anterior a la vigencia desde.")
     return GraduationTicketPrice.objects.update_or_create(
         graduation_event=graduation_event,
         valid_from=valid_from,
-        defaults={"price": Decimal(str(price)), "notes": notes},
+        defaults={"price": Decimal(str(price)), "valid_until": valid_until, "notes": notes},
     )[0]
 
 
@@ -1038,6 +1151,14 @@ def get_event_budget_summary(event_or_budget):
     }
 
 
+def _event_paid_amount(event):
+    return _sum_amount(event.cash_movements.filter(status=CashMovement.Status.CONFIRMED, movement_type=CashMovement.MovementType.INCOME))
+
+
+def _event_expense_amount(event):
+    return _sum_amount(event.cash_movements.filter(status=CashMovement.Status.CONFIRMED, movement_type=CashMovement.MovementType.EXPENSE))
+
+
 def get_event_overview(event):
     if not isinstance(event, Event):
         event = Event.objects.select_related("client").get(pk=event)
@@ -1047,8 +1168,8 @@ def get_event_overview(event):
     assignments = event.staff_assignments.select_related("employee", "role")
     employee_payments = event.employee_payments.select_related("employee", "assignment")
 
-    total_income = _sum_amount(confirmed_movements.filter(movement_type=CashMovement.MovementType.INCOME))
-    total_expense = _sum_amount(confirmed_movements.filter(movement_type=CashMovement.MovementType.EXPENSE))
+    total_income = _event_paid_amount(event)
+    total_expense = _event_expense_amount(event)
     total_transfer_in = _sum_amount(confirmed_movements.filter(movement_type=CashMovement.MovementType.TRANSFER_IN))
     total_transfer_out = _sum_amount(confirmed_movements.filter(movement_type=CashMovement.MovementType.TRANSFER_OUT))
     provider_debt = _sum_amount(provider_entries.filter(entry_type=ProviderLedgerEntry.EntryType.DEBT))
@@ -1057,6 +1178,8 @@ def get_event_overview(event):
     staffing_paid = employee_payments.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
     staffing_pending = staffing_cost - staffing_paid
     budget_summary = get_event_budget_summary(event)
+    event_total = budget_summary["grand_total"]
+    pending_amount = max(event_total - total_income, Decimal("0.00"))
 
     return {
         "event": event,
@@ -1072,6 +1195,10 @@ def get_event_overview(event):
             "transfer_in": total_transfer_in,
             "transfer_out": total_transfer_out,
             "result": total_income - total_expense,
+            "event_total": event_total,
+            "paid": total_income,
+            "pending": pending_amount,
+            "expenses": total_expense,
             "provider_debt": provider_debt,
             "provider_payments": provider_payments,
             "staffing_cost": staffing_cost,
@@ -1088,6 +1215,40 @@ def get_event_overview(event):
         },
         "budget_summary": budget_summary,
     }
+
+
+@transaction.atomic
+def close_event(event, user=None):
+    if not isinstance(event, Event):
+        event = Event.objects.select_for_update().get(pk=event)
+    else:
+        event = Event.objects.select_for_update().get(pk=event.pk)
+    if event.closed_at:
+        return event
+    overview = get_event_overview(event)
+    event.status = Event.Status.CLOSED
+    event.closed_at = timezone.now()
+    event.closed_by = user
+    event.closed_total_amount = overview["financial"]["event_total"]
+    event.closed_paid_amount = overview["financial"]["paid"]
+    event.closed_pending_amount = overview["financial"]["pending"]
+    event.closed_expense_amount = overview["financial"]["expenses"]
+    event.closed_result_amount = overview["financial"]["result"]
+    event.save(
+        update_fields=[
+            "status",
+            "closed_at",
+            "closed_by",
+            "closed_total_amount",
+            "closed_paid_amount",
+            "closed_pending_amount",
+            "closed_expense_amount",
+            "closed_result_amount",
+            "updated_at",
+        ]
+    )
+    audit_log(user, "event_close", event, "Numeros finales congelados.")
+    return event
 
 
 def _pdf_escape(value):

@@ -80,6 +80,8 @@ from .services import (
     close_daily_cash_group,
     create_account_transfer,
     create_balance_adjustment,
+    close_event,
+    create_event_with_client_and_amount,
     create_event_budget_payment_preference,
     create_ticket_purchase_preference,
     build_cash_movement_receipt_pdf,
@@ -92,6 +94,7 @@ from .services import (
     MercadoPagoAPIError,
     MercadoPagoClient,
     PaymentIntegrityError,
+    register_event_payment,
     register_event_budget_item_manual_payment,
     register_employee_payment,
     register_provider_payment,
@@ -393,10 +396,38 @@ class EventViewSet(AuditedModelViewSet):
     ]
     ordering_fields = ["event_date", "event_time", "name", "status", "client__name"]
 
+    @action(detail=False, methods=["post"], url_path="create-with-client")
+    def create_with_client(self, request):
+        event_payload = request.data.copy()
+        amount = event_payload.pop("amount", None)
+        client_data = {
+            "name": event_payload.pop("client_name", ""),
+            "phone": event_payload.pop("client_phone", ""),
+            "email": event_payload.pop("client_email", ""),
+            "notes": event_payload.pop("client_notes", ""),
+        }
+        event_payload.pop("client", None)
+        serializer = self.get_serializer(data=event_payload)
+        serializer.is_valid(raise_exception=True)
+        try:
+            event = create_event_with_client_and_amount(
+                serializer.validated_data,
+                client_data,
+                amount=amount,
+                user=request_user_or_none(request),
+            )
+        except ValidationError as exc:
+            return validation_error_response(exc)
+        return Response(self.get_serializer(event).data, status=status.HTTP_201_CREATED)
+
     @action(detail=True, methods=["get"])
     def overview(self, request, pk=None):
         event = self.get_object()
         overview = get_event_overview(event)
+        movement_ids = [str(row.id) for row in event.cash_movements.all()]
+        audit_entries = AuditLogEntry.objects.filter(
+            Q(model_name="Event", object_id=str(event.id)) | Q(model_name="CashMovement", object_id__in=movement_ids)
+        )[:50]
         return Response(
             {
                 "event": self.get_serializer(event).data,
@@ -408,6 +439,10 @@ class EventViewSet(AuditedModelViewSet):
                 "provider_entries": ProviderLedgerEntrySerializer(event.provider_ledger_entries.select_related("provider", "cash_movement"), many=True).data,
                 "staff_assignments": EventStaffAssignmentSerializer(event.staff_assignments.select_related("employee", "role"), many=True).data,
                 "employee_payments": EmployeePaymentSerializer(event.employee_payments.select_related("employee", "assignment", "cash_movement"), many=True).data,
+                "budget_payments": EventBudgetPaymentSerializer(event.budget.payments.select_related("budget_item", "cash_movement", "cash_movement__account"), many=True).data
+                if hasattr(event, "budget")
+                else [],
+                "audit_entries": AuditLogEntrySerializer(audit_entries, many=True).data,
             }
         )
 
@@ -415,6 +450,32 @@ class EventViewSet(AuditedModelViewSet):
     def budget(self, request, pk=None):
         budget = get_or_create_event_budget(self.get_object())
         return Response(EventBudgetSerializer(budget).data)
+
+    @action(detail=True, methods=["post"], url_path="register-payment")
+    def register_payment(self, request, pk=None):
+        try:
+            payment = register_event_payment(
+                event=self.get_object(),
+                account=request.data.get("account"),
+                amount=request.data.get("amount"),
+                payment_date=parse_date(request.data.get("date"), timezone.localdate()),
+                payment_method=request.data.get("payment_method", "Manual"),
+                description=request.data.get("description", ""),
+                is_deposit=bool(request.data.get("is_deposit")),
+                budget_item=request.data.get("budget_item") or None,
+                user=request_user_or_none(request),
+            )
+        except ValidationError as exc:
+            return validation_error_response(exc)
+        return Response(EventBudgetPaymentSerializer(payment).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"])
+    def close(self, request, pk=None):
+        try:
+            event = close_event(self.get_object(), request_user_or_none(request))
+        except ValidationError as exc:
+            return validation_error_response(exc)
+        return Response(self.get_serializer(event).data)
 
 
 class EventBudgetViewSet(AuditedModelViewSet):
@@ -466,7 +527,77 @@ class EventBudgetPaymentPreferenceAPIView(APIView):
         budget = get_object_or_404(EventBudget, pk=request.data.get("budget"))
         budget_item = request.data.get("budget_item")
         try:
-            payment = create_event_budget_payment_preference(budget, budget_item=budget_item)
+            payment = create_event_budget_payment_preference(budget, budget_item=budget_item, amount=request.data.get("amount"))
+        except ValidationError as exc:
+            return validation_error_response(exc)
+        except MercadoPagoAPIError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        payload = EventBudgetPaymentSerializer(payment).data
+        payload["preference_id"] = payment.mp_preference_id
+        payload["init_point"] = payment.preference_init_point or None
+        payload["sandbox_init_point"] = payment.preference_sandbox_init_point or None
+        return Response(payload, status=status.HTTP_201_CREATED)
+
+
+class EventPaymentPublicAPIView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, token):
+        event = get_object_or_404(Event.objects.select_related("client"), public_payment_token=token)
+        budget = get_or_create_event_budget(event)
+        overview = get_event_overview(event)
+        paid_by_item = {
+            row["budget_item"]: row["total"] or Decimal("0.00")
+            for row in budget.payments.filter(status=EventBudgetPayment.Status.APPROVED, budget_item__isnull=False)
+            .values("budget_item")
+            .annotate(total=Sum("amount"))
+        }
+        items = []
+        for item in budget.items.all():
+            paid = paid_by_item.get(item.id, Decimal("0.00"))
+            items.append(
+                {
+                    "id": item.id,
+                    "service_name": item.service_name,
+                    "category": item.category,
+                    "is_optional": item.is_optional,
+                    "total": item.total,
+                    "paid": paid,
+                    "pending": max(item.total - paid, Decimal("0.00")),
+                }
+            )
+        return Response(
+            {
+                "event": {
+                    "id": event.id,
+                    "name": event.name,
+                    "event_type": event.event_type,
+                    "event_date": event.event_date,
+                    "client_name": event.client_display(),
+                    "status": event.status,
+                },
+                "financial": overview["financial"],
+                "budget_summary": overview["budget_summary"],
+                "items": items,
+            }
+        )
+
+
+class EventPaymentPreferencePublicAPIView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, token):
+        event = get_object_or_404(Event, public_payment_token=token)
+        budget = get_or_create_event_budget(event)
+        budget_item = request.data.get("budget_item") or None
+        try:
+            payment = create_event_budget_payment_preference(
+                budget,
+                budget_item=budget_item,
+                amount=request.data.get("amount") if not budget_item else None,
+            )
         except ValidationError as exc:
             return validation_error_response(exc)
         except MercadoPagoAPIError as exc:
@@ -602,7 +733,12 @@ class GraduationEventViewSet(AuditedModelViewSet):
 
     def perform_create(self, serializer):
         obj = serializer.save()
-        create_graduation_ticket_price(obj, obj.price_per_ticket)
+        create_graduation_ticket_price(
+            obj,
+            obj.price_per_ticket,
+            parse_date(self.request.data.get("valid_from"), timezone.localdate().replace(day=1)),
+            parse_date(self.request.data.get("valid_until")),
+        )
         audit_log(request_user_or_none(self.request), "create", obj)
 
     @action(detail=True, methods=["get"])
@@ -620,6 +756,7 @@ class GraduationEventViewSet(AuditedModelViewSet):
                 self.get_object(),
                 request.data.get("price"),
                 parse_date(request.data.get("valid_from"), timezone.localdate().replace(day=1)),
+                parse_date(request.data.get("valid_until")),
                 request.data.get("notes", ""),
             )
         except ValidationError as exc:

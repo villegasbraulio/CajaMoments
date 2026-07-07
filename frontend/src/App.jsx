@@ -1,7 +1,64 @@
 import { useEffect, useState } from "react";
+import {
+  Alert,
+  AppBar,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  Chip,
+  CssBaseline,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Drawer,
+  Fade,
+  List,
+  ListItemButton,
+  ListItemText,
+  MenuItem,
+  Snackbar,
+  Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  TextField,
+  ThemeProvider,
+  Toolbar,
+  Typography,
+  createTheme,
+} from "@mui/material";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api";
 const TOKEN_STORAGE_KEY = "cajaMomentsAuthToken";
+const drawerWidth = 292;
+
+const theme = createTheme({
+  palette: {
+    mode: "light",
+    primary: { main: "#245c63" },
+    secondary: { main: "#9b5d2e" },
+    background: { default: "#f4f6f5", paper: "#ffffff" },
+    text: { primary: "#17211b", secondary: "#66706a" },
+  },
+  shape: { borderRadius: 10 },
+  typography: {
+    fontFamily: '"Inter", "Avenir Next", system-ui, sans-serif',
+    h4: { fontWeight: 750, letterSpacing: 0 },
+    h5: { fontWeight: 750, letterSpacing: 0 },
+    h6: { fontWeight: 700, letterSpacing: 0 },
+    button: { textTransform: "none", fontWeight: 700 },
+  },
+  components: {
+    MuiCard: { styleOverrides: { root: { border: "1px solid rgba(23,33,27,0.08)", boxShadow: "0 12px 34px rgba(23,33,27,0.08)" } } },
+    MuiTextField: { defaultProps: { size: "small", fullWidth: true } },
+    MuiButton: { defaultProps: { variant: "contained" } },
+  },
+});
 
 const navItems = [
   ["dashboard", "Dashboard"],
@@ -11,8 +68,7 @@ const navItems = [
   ["closes", "Cierres"],
   ["providers", "Proveedores"],
   ["people", "Personal eventual"],
-  ["payments", "Pagos"],
-  ["events", "Eventos basicos"],
+  ["events", "Eventos"],
   ["graduation", "Egresados"],
   ["taxes", "Impuestos y recordatorios"],
   ["audit", "Auditoria"],
@@ -20,9 +76,11 @@ const navItems = [
 ];
 
 const eventStatusOptions = [
-  { id: "DRAFT", name: "Borrador" },
+  { id: "DRAFT", name: "Presupuesto" },
+  { id: "SIGNALED", name: "Señado" },
   { id: "CONFIRMED", name: "Confirmado" },
   { id: "DONE", name: "Realizado" },
+  { id: "CLOSED", name: "Cerrado" },
   { id: "CANCELLED", name: "Cancelado" },
 ];
 
@@ -110,7 +168,8 @@ function statusLabel(type) {
     ADJUSTMENT: "Ajuste",
     CONFIRMED: "Confirmado",
     VOIDED: "Anulado",
-    DRAFT: "Borrador",
+    DRAFT: "Presupuesto",
+    SIGNALED: "Señado",
     CLOSED: "Cerrado",
     OPEN: "Abierto",
     SENT: "Enviado",
@@ -131,40 +190,35 @@ function statusLabel(type) {
 }
 
 function Field({ label, children }) {
-  return (
-    <label className="form-label w-100">
-      <span className="small fw-bold text-uppercase text-muted">{label}</span>
-      {children}
-    </label>
-  );
+  return <Box sx={{ width: "100%", mb: 1.5 }}>{children || label}</Box>;
 }
 
 function TextInput({ label, value, onChange, type = "text", required = false, placeholder = "" }) {
   return (
-    <Field label={label}>
-      <input
-        className="form-control"
-        type={type}
-        value={value}
-        required={required}
-        placeholder={placeholder}
-        onChange={(event) => onChange(event.target.value)}
-      />
-    </Field>
+    <TextField
+      label={label}
+      type={type}
+      value={value}
+      required={required}
+      placeholder={placeholder}
+      onChange={(event) => onChange(event.target.value)}
+      slotProps={type === "date" || type === "time" ? { inputLabel: { shrink: true } } : undefined}
+      sx={{ mb: 1.5 }}
+    />
   );
 }
 
 function TextAreaInput({ label, value, onChange, rows = 3, placeholder = "" }) {
   return (
-    <Field label={label}>
-      <textarea
-        className="form-control"
-        rows={rows}
-        value={value}
-        placeholder={placeholder}
-        onChange={(event) => onChange(event.target.value)}
-      />
-    </Field>
+    <TextField
+      label={label}
+      value={value}
+      placeholder={placeholder}
+      multiline
+      minRows={rows}
+      onChange={(event) => onChange(event.target.value)}
+      sx={{ mb: 1.5 }}
+    />
   );
 }
 
@@ -174,28 +228,58 @@ function SelectInput({ label, value, onChange, options, labelFor, required = fal
   return (
     <Field label={label}>
       {options.length > 8 && (
-        <input
-          className="form-control form-control-sm mb-1"
+        <TextField
+          label={`Buscar ${label.toLowerCase()}`}
+          size="small"
           value={query}
           placeholder="Buscar..."
           onChange={(event) => setQuery(event.target.value)}
+          sx={{ mb: 1 }}
         />
       )}
-      <select className="form-select" value={value || ""} required={required} onChange={(event) => onChange(event.target.value)}>
-        <option value="">{empty}</option>
+      <TextField select label={label} value={value || ""} required={required} onChange={(event) => onChange(event.target.value)}>
+        <MenuItem value="">{empty}</MenuItem>
         {filteredOptions.map((option) => (
-          <option key={option.id} value={option.id}>
+          <MenuItem key={option.id} value={option.id}>
             {labelFor(option)}
-          </option>
+          </MenuItem>
         ))}
-      </select>
+      </TextField>
     </Field>
   );
 }
 
 function AlertLine({ status }) {
   if (!status) return null;
-  return <div className={`alert ${status.type === "error" ? "alert-danger" : "alert-success"} shadow-sm`}>{status.message}</div>;
+  return <Alert severity={status.type === "error" ? "error" : "success"} sx={{ mb: 2 }}>{status.message}</Alert>;
+}
+
+function ActionDialog({ open, title, onClose, children, maxWidth = "md" }) {
+  return (
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth={maxWidth}>
+      <DialogTitle>{title}</DialogTitle>
+      <DialogContent dividers>{children}</DialogContent>
+      <DialogActions>
+        <Button variant="outlined" onClick={onClose}>Cerrar</Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+function ActionCard({ title, subtitle, children }) {
+  return (
+    <Card className="work-card">
+      <CardContent>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems={{ sm: "center" }} justifyContent="space-between">
+          <Box>
+            <Typography variant="h6">{title}</Typography>
+            {subtitle ? <Typography variant="body2" color="text.secondary">{subtitle}</Typography> : null}
+          </Box>
+          <Stack direction="row" spacing={1} flexWrap="wrap">{children}</Stack>
+        </Stack>
+      </CardContent>
+    </Card>
+  );
 }
 
 function prettifyErrorMessage(message) {
@@ -278,8 +362,13 @@ function exportRows(filename, columns, rows) {
 function emptyEventForm() {
   return {
     client: "",
+    client_name: "",
+    client_phone: "",
+    client_email: "",
+    client_notes: "",
     name: "",
     event_type: "",
+    amount: "",
     event_date: todayISO(),
     event_time: "",
     venue_space: "",
@@ -297,7 +386,7 @@ function emptyEventForm() {
     contact_name: "",
     contact_phone: "",
     contact_email: "",
-    status: "CONFIRMED",
+    status: "DRAFT",
     notes: "",
   };
 }
@@ -306,8 +395,13 @@ function normalizeEventForForm(event) {
   if (!event) return emptyEventForm();
   return {
     client: event.client || "",
+    client_name: event.client_name || "",
+    client_phone: event.client_phone || "",
+    client_email: event.client_email || "",
+    client_notes: event.client_notes || "",
     name: event.name || "",
     event_type: event.event_type || "",
+    amount: "",
     event_date: event.event_date || todayISO(),
     event_time: event.event_time ? String(event.event_time).slice(0, 5) : "",
     venue_space: event.venue_space || "",
@@ -325,19 +419,31 @@ function normalizeEventForForm(event) {
     contact_name: event.contact_name || "",
     contact_phone: event.contact_phone || "",
     contact_email: event.contact_email || "",
-    status: event.status || "CONFIRMED",
+    status: event.status || "DRAFT",
     notes: event.notes || "",
   };
 }
 
 function buildEventPayload(form) {
+  const { amount, client_name, client_phone, client_email, client_notes, ...eventFields } = form;
   return {
-    ...form,
+    ...eventFields,
     client: form.client || null,
     event_date: form.event_date || null,
     event_time: form.event_time || null,
     guest_count_dinner: form.guest_count_dinner === "" ? null : Number(form.guest_count_dinner),
     guest_count_toast: form.guest_count_toast === "" ? null : Number(form.guest_count_toast),
+  };
+}
+
+function buildEventWithClientPayload(form) {
+  return {
+    ...buildEventPayload({ ...form, client: "" }),
+    client_name: form.client_name,
+    client_phone: form.client_phone,
+    client_email: form.client_email,
+    client_notes: form.client_notes,
+    amount: form.amount === "" ? "0" : form.amount,
   };
 }
 
@@ -354,7 +460,7 @@ function emptyBudgetItemForm() {
   };
 }
 
-function App() {
+function AppContent() {
   const [active, setActive] = useState("dashboard");
   const [authToken, setAuthToken] = useState(() => localStorage.getItem(TOKEN_STORAGE_KEY));
   const [currentUser, setCurrentUser] = useState(null);
@@ -548,6 +654,10 @@ function App() {
   if (publicGraduationMatch) {
     return <PublicGraduationPage token={publicGraduationMatch[1]} />;
   }
+  const publicEventPaymentMatch = window.location.pathname.match(/^\/pagar-evento\/([^/]+)\/?/);
+  if (publicEventPaymentMatch) {
+    return <PublicEventPaymentPage token={publicEventPaymentMatch[1]} />;
+  }
 
   if (booting) {
     return (
@@ -568,31 +678,69 @@ function App() {
   }
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand-mark mb-4">
-          <div className="pill mb-3">Fase 1</div>
-          <h1>Caja Moments</h1>
-          <p className="mb-0 opacity-75">Caja diaria, billeteras, proveedores, personal e impuestos.</p>
-        </div>
-        <div className="mb-4">
-          <div className="small text-uppercase opacity-50">Sesion</div>
-          <div className="fw-semibold">{currentUser.username}</div>
-          <button className="btn btn-sm btn-outline-light mt-2" onClick={handleLogout}>Cerrar sesion</button>
-        </div>
-        <nav>
+    <Box sx={{ display: "flex", minHeight: "100vh", bgcolor: "background.default" }}>
+      <Drawer
+        variant="permanent"
+        sx={{
+          width: drawerWidth,
+          flexShrink: 0,
+          "& .MuiDrawer-paper": {
+            width: drawerWidth,
+            boxSizing: "border-box",
+            border: 0,
+            bgcolor: "#132326",
+            color: "#f8fbfa",
+          },
+        }}
+      >
+        <Box sx={{ p: 2.5 }}>
+          <Chip label="Backoffice" size="small" sx={{ bgcolor: "rgba(255,255,255,0.12)", color: "white", mb: 2 }} />
+          <Typography variant="h5">Caja Moments</Typography>
+          <Typography variant="body2" sx={{ color: "rgba(255,255,255,0.64)", mt: 0.75 }}>Eventos, caja y operaciones.</Typography>
+        </Box>
+        <List sx={{ px: 1.5 }}>
           {navItems.map(([key, label]) => (
-            <button key={key} className={`nav-button ${active === key ? "active" : ""}`} onClick={() => setActive(key)}>
-              {label}
-            </button>
+            <ListItemButton
+              key={key}
+              selected={active === key}
+              onClick={() => setActive(key)}
+              sx={{
+                borderRadius: 2,
+                mb: 0.5,
+                color: "rgba(255,255,255,0.78)",
+                "&.Mui-selected": { bgcolor: "rgba(255,255,255,0.14)", color: "white" },
+                "&:hover": { bgcolor: "rgba(255,255,255,0.1)" },
+              }}
+            >
+              <ListItemText primary={label} primaryTypographyProps={{ fontWeight: active === key ? 750 : 600 }} />
+            </ListItemButton>
           ))}
-        </nav>
-      </aside>
-      <main className="main-stage">
-        <AlertLine status={status} />
-        {screens[active]}
-      </main>
-    </div>
+        </List>
+      </Drawer>
+      <Box component="main" sx={{ flexGrow: 1, minWidth: 0 }}>
+        <AppBar position="sticky" color="inherit" elevation={0} sx={{ borderBottom: "1px solid rgba(23,33,27,0.08)", backdropFilter: "blur(14px)" }}>
+          <Toolbar sx={{ justifyContent: "space-between" }}>
+            <Typography variant="body2" color="text.secondary">Sesion: <strong>{currentUser.username}</strong></Typography>
+            <Button variant="outlined" color="primary" onClick={handleLogout}>Cerrar sesion</Button>
+          </Toolbar>
+        </AppBar>
+        <Fade in key={active} timeout={220}>
+          <Box className="main-stage">{screens[active]}</Box>
+        </Fade>
+      </Box>
+      <Snackbar open={Boolean(status)} autoHideDuration={4200} onClose={() => setStatus(null)} anchorOrigin={{ vertical: "top", horizontal: "right" }}>
+        {status ? <Alert severity={status.type === "error" ? "error" : "success"} onClose={() => setStatus(null)}>{status.message}</Alert> : undefined}
+      </Snackbar>
+    </Box>
+  );
+}
+
+function App() {
+  return (
+    <ThemeProvider theme={theme}>
+      <CssBaseline />
+      <AppContent />
+    </ThemeProvider>
   );
 }
 
@@ -633,17 +781,22 @@ function LoginScreen({ onLogin, status }) {
   );
 }
 
-function PageHeader({ title, kicker, children }) {
+function PageHeader({ title, kicker, children, actions }) {
   return (
-    <section className="hero-card">
-      <div className="row g-3 align-items-end">
-        <div className="col-lg">
-          <div className="pill mb-3">{kicker}</div>
-          <h2 className="mb-2">{title}</h2>
-          <p className="text-muted mb-0">{children}</p>
-        </div>
-      </div>
-    </section>
+    <Card className="hero-card">
+      <CardContent>
+        <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" alignItems={{ xs: "flex-start", md: "center" }} spacing={2}>
+          <Box>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+              <Chip label={kicker} size="small" color="primary" variant="outlined" />
+            </Stack>
+            <Typography variant="h4">{title}</Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>{children}</Typography>
+          </Box>
+          {actions ? <Stack direction="row" spacing={1} sx={{ flexShrink: 0 }}>{actions}</Stack> : null}
+        </Stack>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -818,6 +971,7 @@ function DailyCash({ refs, mutate, reloadKey }) {
   const [movements, setMovements] = useState([]);
   const [selectedMovement, setSelectedMovement] = useState(null);
   const [editingMovement, setEditingMovement] = useState(null);
+  const [cashDialogs, setCashDialogs] = useState({ create: false, detail: false });
 
   const selectedCode = refs.movementCodes.find((code) => String(code.id) === String(form.code));
   const selectedAccount = refs.accounts.find((account) => String(account.id) === String(form.account));
@@ -861,6 +1015,7 @@ function DailyCash({ refs, mutate, reloadKey }) {
     await mutate(async () => api("/cash-movements/", { method: "POST", body: JSON.stringify(payload) }), "Movimiento cargado");
     loadMovements();
     setForm((current) => ({ ...current, amount: "", description: "", voucher_number: "", notes: "" }));
+    setCashDialogs((state) => ({ ...state, create: false }));
   }
 
   const filteredIncome = movements
@@ -902,6 +1057,7 @@ function DailyCash({ refs, mutate, reloadKey }) {
       notes: row.notes || "",
       status: row.status || "CONFIRMED",
     });
+    setCashDialogs((state) => ({ ...state, detail: true }));
   }
 
   async function downloadReceipt(row) {
@@ -925,6 +1081,10 @@ function DailyCash({ refs, mutate, reloadKey }) {
       </PageHeader>
       <div className="row g-3">
         <div className="col-xl-4">
+          <ActionCard title="Caja diaria" subtitle="Carga movimientos en una ventana y revisa el libro filtrado.">
+            <Button onClick={() => setCashDialogs({ ...cashDialogs, create: true })}>Nuevo movimiento</Button>
+          </ActionCard>
+          <ActionDialog open={cashDialogs.create} title="Nuevo movimiento de caja" onClose={() => setCashDialogs({ ...cashDialogs, create: false })}>
           <form className="work-card" onSubmit={submit}>
             <h4 className="section-title">Nuevo movimiento</h4>
             <div className="row g-2">
@@ -948,6 +1108,7 @@ function DailyCash({ refs, mutate, reloadKey }) {
             </div>
             <button className="btn btn-earth w-100 mt-3" type="submit">Guardar movimiento</button>
           </form>
+          </ActionDialog>
         </div>
         <div className="col-xl-8">
           <div className="work-card">
@@ -1023,13 +1184,17 @@ function DailyCash({ refs, mutate, reloadKey }) {
                 [(row) => <button className="btn btn-sm btn-outline-dark" onClick={() => openMovement(row)}>Detalle</button>, ""],
               ]}
             />
-            {selectedMovement && editingMovement && (
+            <ActionDialog open={cashDialogs.detail && Boolean(selectedMovement && editingMovement)} title={`Movimiento #${selectedMovement?.id || ""}`} onClose={() => setCashDialogs({ ...cashDialogs, detail: false })} maxWidth="lg">
+            {selectedMovement && editingMovement ? (
               <form
                 className="border rounded-4 p-3 mt-3"
                 onSubmit={(event) => {
                   event.preventDefault();
                   mutate(
-                    () => api(`/cash-movements/${selectedMovement.id}/`, { method: "PUT", body: JSON.stringify(editingMovement) }),
+                    async () => {
+                      await api(`/cash-movements/${selectedMovement.id}/`, { method: "PUT", body: JSON.stringify(editingMovement) });
+                      setCashDialogs((state) => ({ ...state, detail: false }));
+                    },
                     "Movimiento actualizado",
                   ).then(loadMovements);
                 }}
@@ -1053,7 +1218,8 @@ function DailyCash({ refs, mutate, reloadKey }) {
                 </div>
                 <button className="btn btn-earth btn-sm mt-2">Guardar cambios</button>
               </form>
-            )}
+            ) : null}
+            </ActionDialog>
           </div>
         </div>
       </div>
@@ -1064,6 +1230,7 @@ function DailyCash({ refs, mutate, reloadKey }) {
 function AccountsScreen({ refs, mutate }) {
   const [account, setAccount] = useState({ name: "", type: "CASH", currency: "ARS", initial_balance: "0.00", notes: "" });
   const [adjust, setAdjust] = useState({ account: "", date: todayISO(), declared_balance: "", description: "" });
+  const [accountDialogs, setAccountDialogs] = useState({ account: false, adjust: false });
 
   return (
     <>
@@ -1072,12 +1239,20 @@ function AccountsScreen({ refs, mutate }) {
       </PageHeader>
       <div className="row g-3">
         <div className="col-lg-4">
+          <ActionCard title="Cuentas" subtitle="Administra altas y ajustes desde acciones.">
+            <Button onClick={() => setAccountDialogs({ ...accountDialogs, account: true })}>Nueva cuenta</Button>
+            <Button variant="outlined" onClick={() => setAccountDialogs({ ...accountDialogs, adjust: true })}>Ajuste de saldo</Button>
+          </ActionCard>
+          <ActionDialog open={accountDialogs.account} title="Nueva cuenta" onClose={() => setAccountDialogs({ ...accountDialogs, account: false })}>
           <form className="work-card" onSubmit={(e) => {
             e.preventDefault();
             if (!window.confirm(`Crear la cuenta ${account.name}?`)) {
               return;
             }
-            mutate(() => api("/accounts/", { method: "POST", body: JSON.stringify(account) }), "Cuenta creada");
+            mutate(async () => {
+              await api("/accounts/", { method: "POST", body: JSON.stringify(account) });
+              setAccountDialogs((state) => ({ ...state, account: false }));
+            }, "Cuenta creada");
           }}>
             <h4 className="section-title">Nueva cuenta</h4>
             <TextInput label="Nombre" value={account.name} onChange={(v) => setAccount({ ...account, name: v })} required />
@@ -1086,12 +1261,17 @@ function AccountsScreen({ refs, mutate }) {
             <TextInput label="Saldo inicial" type="number" value={account.initial_balance} onChange={(v) => setAccount({ ...account, initial_balance: v })} />
             <button className="btn btn-olive w-100 mt-2">Crear</button>
           </form>
+          </ActionDialog>
+          <ActionDialog open={accountDialogs.adjust} title="Ajuste de saldo" onClose={() => setAccountDialogs({ ...accountDialogs, adjust: false })}>
           <form className="work-card mt-3" onSubmit={(e) => {
             e.preventDefault();
             if (!window.confirm(`Registrar ajuste de saldo para la cuenta seleccionada?`)) {
               return;
             }
-            mutate(() => api(`/accounts/${adjust.account}/adjust-balance/`, { method: "POST", body: JSON.stringify(adjust) }), "Ajuste registrado");
+            mutate(async () => {
+              await api(`/accounts/${adjust.account}/adjust-balance/`, { method: "POST", body: JSON.stringify(adjust) });
+              setAccountDialogs((state) => ({ ...state, adjust: false }));
+            }, "Ajuste registrado");
           }}>
             <h4 className="section-title">Ajuste de saldo</h4>
             <SelectInput label="Cuenta" value={adjust.account} onChange={(v) => setAdjust({ ...adjust, account: v })} options={refs.accounts} labelFor={(a) => `${a.name} (${money(a.current_balance, a.currency)})`} required />
@@ -1100,6 +1280,7 @@ function AccountsScreen({ refs, mutate }) {
             <TextInput label="Descripcion" value={adjust.description} onChange={(v) => setAdjust({ ...adjust, description: v })} />
             <button className="btn btn-earth w-100 mt-2">Crear ajuste</button>
           </form>
+          </ActionDialog>
         </div>
         <div className="col-lg-8">
           <div className="work-card">
@@ -1122,6 +1303,7 @@ function AccountsScreen({ refs, mutate }) {
 function TransfersScreen({ refs, mutate, reloadKey }) {
   const [form, setForm] = useState({ date: todayISO(), from_account: "", to_account: "", amount: "", fee_amount: "0.00", description: "" });
   const [transfers, setTransfers] = useState([]);
+  const [transferDialog, setTransferDialog] = useState(false);
 
   useEffect(() => {
     api("/account-transfers/").then((data) => setTransfers(unwrap(data)));
@@ -1134,12 +1316,19 @@ function TransfersScreen({ refs, mutate, reloadKey }) {
       </PageHeader>
       <div className="row g-3">
         <div className="col-lg-4">
+          <ActionCard title="Transferencias" subtitle="Mové fondos entre cuentas desde una ventana.">
+            <Button onClick={() => setTransferDialog(true)}>Nueva transferencia</Button>
+          </ActionCard>
+          <ActionDialog open={transferDialog} title="Nueva transferencia" onClose={() => setTransferDialog(false)}>
           <form className="work-card" onSubmit={(e) => {
             e.preventDefault();
             if (!window.confirm(`Crear transferencia por ${money(form.amount || 0)}?`)) {
               return;
             }
-            mutate(() => api("/account-transfers/", { method: "POST", body: JSON.stringify(form) }), "Transferencia creada");
+            mutate(async () => {
+              await api("/account-transfers/", { method: "POST", body: JSON.stringify(form) });
+              setTransferDialog(false);
+            }, "Transferencia creada");
           }}>
             <SelectInput label="Desde" value={form.from_account} onChange={(v) => setForm({ ...form, from_account: v })} options={refs.accounts} labelFor={(a) => `${a.name} (${a.currency})`} required />
             <SelectInput label="Hacia" value={form.to_account} onChange={(v) => setForm({ ...form, to_account: v })} options={refs.accounts} labelFor={(a) => `${a.name} (${a.currency})`} required />
@@ -1149,6 +1338,7 @@ function TransfersScreen({ refs, mutate, reloadKey }) {
             <TextInput label="Descripcion" value={form.description} onChange={(v) => setForm({ ...form, description: v })} />
             <button className="btn btn-earth w-100 mt-2">Transferir</button>
           </form>
+          </ActionDialog>
         </div>
         <div className="col-lg-8">
           <div className="work-card">
@@ -1311,6 +1501,7 @@ function ProvidersScreen({ refs, mutate, reloadKey }) {
   const [ledger, setLedger] = useState([]);
   const [debt, setDebt] = useState({ date: todayISO(), description: "", document_number: "", amount: "", event: "" });
   const [payment, setPayment] = useState({ date: todayISO(), account: "", amount: "", description: "", event: "", document_number: "" });
+  const [providerDialogs, setProviderDialogs] = useState({ create: false, edit: false, debt: false, payment: false });
 
   useEffect(() => {
     if (selectedProvider) api(`/providers/${selectedProvider}/ledger/`).then(setLedger);
@@ -1339,9 +1530,16 @@ function ProvidersScreen({ refs, mutate, reloadKey }) {
       </PageHeader>
       <div className="row g-3">
         <div className="col-lg-4">
+          <ActionCard title="Proveedores" subtitle="Lista y cuenta corriente.">
+            <Button onClick={() => setProviderDialogs({ ...providerDialogs, create: true })}>Nuevo proveedor</Button>
+          </ActionCard>
+          <ActionDialog open={providerDialogs.create} title="Nuevo proveedor" onClose={() => setProviderDialogs({ ...providerDialogs, create: false })}>
           <form className="work-card" onSubmit={(e) => {
             e.preventDefault();
-            mutate(() => api("/providers/", { method: "POST", body: JSON.stringify(providerForm) }), "Proveedor creado");
+            mutate(async () => {
+              await api("/providers/", { method: "POST", body: JSON.stringify(providerForm) });
+              setProviderDialogs((state) => ({ ...state, create: false }));
+            }, "Proveedor creado");
           }}>
             <h4 className="section-title">Nuevo proveedor</h4>
             <TextInput label="Nombre" value={providerForm.name} onChange={(v) => setProviderForm({ ...providerForm, name: v })} required />
@@ -1350,23 +1548,38 @@ function ProvidersScreen({ refs, mutate, reloadKey }) {
             <TextInput label="Telefono" value={providerForm.phone} onChange={(v) => setProviderForm({ ...providerForm, phone: v })} />
             <button className="btn btn-olive w-100 mt-2">Crear proveedor</button>
           </form>
-          <div className="work-card mt-3">
+          </ActionDialog>
+          <div className="work-card">
             <h4 className="section-title">Listado</h4>
             <SimpleTable rows={refs.providers} columns={[
               ["name", "Proveedor"],
               [(row) => money(row.balance), "Saldo"],
-              [(row) => <button className="btn btn-sm btn-outline-dark" onClick={() => setSelectedProvider(String(row.id))}>Pagar</button>, ""],
+              [(row) => <button className="btn btn-sm btn-outline-dark" onClick={() => {
+                setSelectedProvider(String(row.id));
+                setProviderDialogs({ ...providerDialogs, payment: true });
+              }}>Pagar</button>, ""],
             ]} />
           </div>
           <div className="work-card mt-3">
             <SelectInput label="Proveedor" value={selectedProvider} onChange={setSelectedProvider} options={refs.providers} labelFor={(p) => `${p.name} (${money(p.balance)})`} />
             {selected && <div className="metric-card mt-2"><span className="text-muted small">Saldo</span><strong className="d-block">{money(selected.balance)}</strong></div>}
+            {selected && (
+              <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
+                <Button size="small" variant="outlined" onClick={() => setProviderDialogs({ ...providerDialogs, edit: true })}>Editar</Button>
+                <Button size="small" variant="outlined" onClick={() => setProviderDialogs({ ...providerDialogs, debt: true })}>Cargar deuda</Button>
+                <Button size="small" onClick={() => setProviderDialogs({ ...providerDialogs, payment: true })}>Pagar</Button>
+              </Stack>
+            )}
             {editingProvider && (
+              <ActionDialog open={providerDialogs.edit} title={`Proveedor ${selected?.name || ""}`} onClose={() => setProviderDialogs({ ...providerDialogs, edit: false })}>
               <form
                 className="mt-3"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  mutate(() => api(`/providers/${selectedProvider}/`, { method: "PUT", body: JSON.stringify(editingProvider) }), "Proveedor actualizado");
+                  mutate(async () => {
+                    await api(`/providers/${selectedProvider}/`, { method: "PUT", body: JSON.stringify(editingProvider) });
+                    setProviderDialogs((state) => ({ ...state, edit: false }));
+                  }, "Proveedor actualizado");
                 }}
               >
                 <TextInput label="Nombre" value={editingProvider.name || ""} onChange={(v) => setEditingProvider({ ...editingProvider, name: v })} />
@@ -1376,16 +1589,21 @@ function ProvidersScreen({ refs, mutate, reloadKey }) {
                 <TextInput label="CUIT" value={editingProvider.cuit || ""} onChange={(v) => setEditingProvider({ ...editingProvider, cuit: v })} />
                 <button className="btn btn-outline-dark btn-sm">Guardar proveedor</button>
               </form>
+              </ActionDialog>
             )}
           </div>
         </div>
         <div className="col-lg-8">
           {selectedProvider && (
             <div className="row g-3">
-              <div className="col-md-6">
+              <div className="d-none">
+                <ActionDialog open={providerDialogs.debt} title="Cargar deuda/remito" onClose={() => setProviderDialogs({ ...providerDialogs, debt: false })}>
                 <form className="work-card" onSubmit={(e) => {
                   e.preventDefault();
-                  mutate(() => api("/provider-ledger/", { method: "POST", body: JSON.stringify({ ...debt, event: debt.event || null, provider: selectedProvider, entry_type: "DEBT" }) }), "Deuda de proveedor cargada");
+                  mutate(async () => {
+                    await api("/provider-ledger/", { method: "POST", body: JSON.stringify({ ...debt, event: debt.event || null, provider: selectedProvider, entry_type: "DEBT" }) });
+                    setProviderDialogs((state) => ({ ...state, debt: false }));
+                  }, "Deuda de proveedor cargada");
                 }}>
                   <h4 className="section-title">Cargar deuda/remito</h4>
                   <TextInput label="Fecha" type="date" value={debt.date} onChange={(v) => setDebt({ ...debt, date: v })} />
@@ -1394,14 +1612,19 @@ function ProvidersScreen({ refs, mutate, reloadKey }) {
                   <TextInput label="Importe" type="number" value={debt.amount} onChange={(v) => setDebt({ ...debt, amount: v })} required />
                   <button className="btn btn-outline-dark w-100 mt-2">Registrar deuda</button>
                 </form>
+                </ActionDialog>
               </div>
-              <div className="col-md-6">
+              <div className="d-none">
+                <ActionDialog open={providerDialogs.payment} title="Pago a proveedor" onClose={() => setProviderDialogs({ ...providerDialogs, payment: false })}>
                 <form className="work-card" onSubmit={(e) => {
                   e.preventDefault();
                   if (!window.confirm(`Registrar pago a ${selected?.name || "proveedor"} por ${money(payment.amount || 0)}?`)) {
                     return;
                   }
-                  mutate(() => api(`/providers/${selectedProvider}/pay/`, { method: "POST", body: JSON.stringify(payment) }), "Pago a proveedor registrado");
+                  mutate(async () => {
+                    await api(`/providers/${selectedProvider}/pay/`, { method: "POST", body: JSON.stringify(payment) });
+                    setProviderDialogs((state) => ({ ...state, payment: false }));
+                  }, "Pago a proveedor registrado");
                 }}>
                   <h4 className="section-title">Pago directo</h4>
                   <SelectInput label="Cuenta" value={payment.account} onChange={(v) => setPayment({ ...payment, account: v })} options={refs.accounts} labelFor={(a) => a.name} required />
@@ -1410,6 +1633,7 @@ function ProvidersScreen({ refs, mutate, reloadKey }) {
                   <TextInput label="Descripcion" value={payment.description} onChange={(v) => setPayment({ ...payment, description: v })} />
                   <button className="btn btn-earth w-100 mt-2">Pagar proveedor</button>
                 </form>
+                </ActionDialog>
               </div>
               <div className="col-12">
                 <div className="work-card">
@@ -1460,6 +1684,7 @@ function PeopleScreen({ refs, mutate }) {
   const [roleName, setRoleName] = useState("");
   const [assignment, setAssignment] = useState({ event: "", employee: "", role: "", work_date: todayISO(), base_amount: "", extra_amount: "0.00", status: "WORKED" });
   const [payment, setPayment] = useState({ employee: "", assignment: "", account: "", amount: "", payment_date: todayISO(), notes: "" });
+  const [peopleDialogs, setPeopleDialogs] = useState({ employee: false, role: false, assignment: false, payment: false, edit: false });
   const selectedEmployee = refs.employees.find((row) => String(row.id) === String(selectedEmployeeId));
   const selectedAssignments = refs.assignments.filter((row) => String(row.employee) === String(selectedEmployeeId));
 
@@ -1474,9 +1699,17 @@ function PeopleScreen({ refs, mutate }) {
       </PageHeader>
       <div className="row g-3">
         <div className="col-lg-4">
+          <ActionCard title="Personal" subtitle="Altas y roles se cargan en ventanas.">
+            <Button onClick={() => setPeopleDialogs({ ...peopleDialogs, employee: true })}>Nuevo empleado</Button>
+            <Button variant="outlined" onClick={() => setPeopleDialogs({ ...peopleDialogs, role: true })}>Nuevo rol</Button>
+          </ActionCard>
+          <ActionDialog open={peopleDialogs.employee} title="Nuevo empleado" onClose={() => setPeopleDialogs({ ...peopleDialogs, employee: false })}>
           <form className="work-card" onSubmit={(e) => {
             e.preventDefault();
-            mutate(() => api("/employees/", { method: "POST", body: JSON.stringify(employee) }), "Empleado creado");
+            mutate(async () => {
+              await api("/employees/", { method: "POST", body: JSON.stringify(employee) });
+              setPeopleDialogs((state) => ({ ...state, employee: false }));
+            }, "Empleado creado");
           }}>
             <h4 className="section-title">Empleado</h4>
             <TextInput label="Nombre" value={employee.first_name} onChange={(v) => setEmployee({ ...employee, first_name: v })} required />
@@ -1486,21 +1719,34 @@ function PeopleScreen({ refs, mutate }) {
             <TextInput label="Email" type="email" value={employee.email} onChange={(v) => setEmployee({ ...employee, email: v })} />
             <button className="btn btn-olive w-100 mt-2">Crear empleado</button>
           </form>
+          </ActionDialog>
+          <ActionDialog open={peopleDialogs.role} title="Nuevo rol" onClose={() => setPeopleDialogs({ ...peopleDialogs, role: false })}>
           <form className="work-card mt-3" onSubmit={(e) => {
             e.preventDefault();
-            mutate(() => api("/employee-roles/", { method: "POST", body: JSON.stringify({ name: roleName }) }), "Rol creado");
+            mutate(async () => {
+              await api("/employee-roles/", { method: "POST", body: JSON.stringify({ name: roleName }) });
+              setPeopleDialogs((state) => ({ ...state, role: false }));
+            }, "Rol creado");
           }}>
             <h4 className="section-title">Rol</h4>
             <TextInput label="Nombre del rol" value={roleName} onChange={setRoleName} required />
             <button className="btn btn-outline-dark w-100 mt-2">Crear rol</button>
           </form>
+          </ActionDialog>
         </div>
         <div className="col-lg-8">
           <div className="row g-3">
             <div className="col-md-6">
+              <ActionCard title="Asignaciones" subtitle="Carga trabajo por evento.">
+                <Button onClick={() => setPeopleDialogs({ ...peopleDialogs, assignment: true })}>Asignar a evento</Button>
+              </ActionCard>
+              <ActionDialog open={peopleDialogs.assignment} title="Asignar personal a evento" onClose={() => setPeopleDialogs({ ...peopleDialogs, assignment: false })}>
               <form className="work-card" onSubmit={(e) => {
                 e.preventDefault();
-                mutate(() => api("/event-staff-assignments/", { method: "POST", body: JSON.stringify(assignment) }), "Asignacion creada");
+                mutate(async () => {
+                  await api("/event-staff-assignments/", { method: "POST", body: JSON.stringify(assignment) });
+                  setPeopleDialogs((state) => ({ ...state, assignment: false }));
+                }, "Asignacion creada");
               }}>
                 <h4 className="section-title">Asignar a evento</h4>
                 <SelectInput label="Evento" value={assignment.event} onChange={(v) => setAssignment({ ...assignment, event: v })} options={refs.events} labelFor={(e) => e.name} required />
@@ -1513,19 +1759,27 @@ function PeopleScreen({ refs, mutate }) {
                 <div className="small text-muted">Extra: {thousands(assignment.extra_amount)}</div>
                 <button className="btn btn-olive w-100 mt-2">Asignar</button>
               </form>
+              </ActionDialog>
             </div>
             <div className="col-md-6">
+              <ActionCard title="Pagos" subtitle="Pago parcial o total al personal.">
+                <Button onClick={() => setPeopleDialogs({ ...peopleDialogs, payment: true })}>Registrar pago</Button>
+              </ActionCard>
+              <ActionDialog open={peopleDialogs.payment} title="Registrar pago a empleado" onClose={() => setPeopleDialogs({ ...peopleDialogs, payment: false })}>
               <form className="work-card" onSubmit={(e) => {
                 e.preventDefault();
                 const selectedAssignment = refs.assignments.find((item) => String(item.id) === String(payment.assignment));
-                mutate(() => api("/employee-payments/", { method: "POST", body: JSON.stringify({ ...payment, employee: payment.employee || selectedAssignment?.employee }) }), "Pago a empleado registrado");
+                mutate(async () => {
+                  await api("/employee-payments/", { method: "POST", body: JSON.stringify({ ...payment, employee: payment.employee || selectedAssignment?.employee }) });
+                  setPeopleDialogs((state) => ({ ...state, payment: false }));
+                }, "Pago a empleado registrado");
               }}>
                 <h4 className="section-title">Pago parcial/total</h4>
                 {/* TODO: enviar automaticamente el comprobante de pago al email del empleado cuando exista backend de envio operativo. */}
                 <SelectInput label="Empleado" value={payment.employee} onChange={(v) => setPayment({ ...payment, employee: v })} options={refs.employees} labelFor={(e) => e.display_name || `${e.first_name} ${e.last_name}`} required />
                 <SelectInput label="Asignacion" value={payment.assignment} onChange={(v) => {
                   const selected = refs.assignments.find((item) => String(item.id) === String(v));
-                  setPayment({ ...payment, assignment: v, employee: selected?.employee || payment.employee });
+                  setPayment({ ...payment, assignment: v, employee: selected?.employee || payment.employee, amount: selected?.pending_amount || payment.amount });
                 }} options={refs.assignments} labelFor={(a) => `${a.event_name} - ${a.employee_name} - pendiente ${money(a.pending_amount)}`} empty="Pago sin asignacion" />
                 <SelectInput label="Cuenta" value={payment.account} onChange={(v) => setPayment({ ...payment, account: v })} options={refs.accounts} labelFor={(a) => a.name} required />
                 <TextInput label="Fecha pago" type="date" value={payment.payment_date} onChange={(v) => setPayment({ ...payment, payment_date: v })} />
@@ -1534,6 +1788,7 @@ function PeopleScreen({ refs, mutate }) {
                 <TextInput label="Notas" value={payment.notes} onChange={(v) => setPayment({ ...payment, notes: v })} />
                 <button className="btn btn-earth w-100 mt-2">Registrar pago</button>
               </form>
+              </ActionDialog>
             </div>
           </div>
           <div className="work-card mt-3">
@@ -1547,16 +1802,23 @@ function PeopleScreen({ refs, mutate }) {
               [(row) => <button className="btn btn-sm btn-outline-dark" onClick={() => {
                 setSelectedEmployeeId(String(row.id));
                 setPayment({ ...payment, employee: String(row.id) });
+                setPeopleDialogs({ ...peopleDialogs, payment: true });
               }}>Pagar</button>, ""],
-              [(row) => <button className="btn btn-sm btn-outline-dark" onClick={() => setSelectedEmployeeId(String(row.id))}>Ficha</button>, ""],
+              [(row) => <button className="btn btn-sm btn-outline-dark" onClick={() => {
+                setSelectedEmployeeId(String(row.id));
+                setPeopleDialogs({ ...peopleDialogs, edit: true });
+              }}>Ficha</button>, ""],
             ]} />
           </div>
           {editingEmployee && (
+            <ActionDialog open={peopleDialogs.edit} title={`Ficha de ${selectedEmployee?.display_name || ""}`} onClose={() => setPeopleDialogs({ ...peopleDialogs, edit: false })} maxWidth="lg">
             <form
-              className="work-card mt-3"
               onSubmit={(event) => {
                 event.preventDefault();
-                mutate(() => api(`/employees/${selectedEmployeeId}/`, { method: "PUT", body: JSON.stringify(editingEmployee) }), "Empleado actualizado");
+                mutate(async () => {
+                  await api(`/employees/${selectedEmployeeId}/`, { method: "PUT", body: JSON.stringify(editingEmployee) });
+                  setPeopleDialogs((state) => ({ ...state, edit: false }));
+                }, "Empleado actualizado");
               }}
             >
               <h4 className="section-title">Ficha de {selectedEmployee?.display_name}</h4>
@@ -1579,6 +1841,7 @@ function PeopleScreen({ refs, mutate }) {
                 [(row) => statusLabel(row.status), "Estado"],
               ]} />
             </form>
+            </ActionDialog>
           )}
           <div className="work-card mt-3">
             <h4 className="section-title">Asignaciones</h4>
@@ -1651,7 +1914,10 @@ function PaymentsScreen({ refs, mutate }) {
             {/* TODO: enviar automaticamente el comprobante de pago al email del empleado cuando exista backend de envio operativo. */}
             <div className="row g-2">
               <div className="col-md-4"><SelectInput label="Empleado" value={employeePayment.employee} onChange={(v) => setEmployeePayment({ ...employeePayment, employee: v })} options={refs.employees} labelFor={(e) => e.display_name || `${e.first_name} ${e.last_name}`} required /></div>
-              <div className="col-md-4"><SelectInput label="Asignacion" value={employeePayment.assignment} onChange={(v) => setEmployeePayment({ ...employeePayment, assignment: v })} options={refs.assignments} labelFor={(a) => `${a.event_name} - ${a.employee_name} - ${money(a.pending_amount)}`} empty="Sin asignacion" /></div>
+              <div className="col-md-4"><SelectInput label="Asignacion" value={employeePayment.assignment} onChange={(v) => {
+                const selected = refs.assignments.find((item) => String(item.id) === String(v));
+                setEmployeePayment({ ...employeePayment, assignment: v, employee: selected?.employee || employeePayment.employee, amount: selected?.pending_amount || employeePayment.amount });
+              }} options={refs.assignments} labelFor={(a) => `${a.event_name} - ${a.employee_name} - ${money(a.pending_amount)}`} empty="Sin asignacion" /></div>
               <div className="col-md-4"><SelectInput label="Cuenta" value={employeePayment.account} onChange={(v) => setEmployeePayment({ ...employeePayment, account: v })} options={refs.accounts} labelFor={(a) => a.name} required /></div>
               <div className="col-md-3"><TextInput label="Fecha" type="date" value={employeePayment.payment_date} onChange={(v) => setEmployeePayment({ ...employeePayment, payment_date: v })} /></div>
               <div className="col-md-3"><TextInput label="Importe" type="number" value={employeePayment.amount} onChange={(v) => setEmployeePayment({ ...employeePayment, amount: v })} required /></div>
@@ -1706,13 +1972,15 @@ function PaymentsScreen({ refs, mutate }) {
 }
 
 function EventsScreen({ refs, mutate, reloadKey }) {
-  const [client, setClient] = useState({ name: "", phone: "", email: "", notes: "" });
   const [newEvent, setNewEvent] = useState(emptyEventForm());
   const [selectedEventId, setSelectedEventId] = useState("");
   const [editingEvent, setEditingEvent] = useState(emptyEventForm());
   const [budget, setBudget] = useState(null);
   const [budgetForm, setBudgetForm] = useState({ status: "DRAFT", notes: "", optional_comments: "", internal_notes: "" });
   const [budgetItem, setBudgetItem] = useState(emptyBudgetItemForm());
+  const [editingBudgetItem, setEditingBudgetItem] = useState(null);
+  const [eventPayment, setEventPayment] = useState({ account: "", amount: "", payment_method: "Efectivo", description: "", is_deposit: true, budget_item: "" });
+  const [eventDialogs, setEventDialogs] = useState({ create: false, edit: false, payment: false, budget: false, item: false });
   const [checkoutPreference, setCheckoutPreference] = useState(null);
   const [paymentLoading, setPaymentLoading] = useState(false);
   const [filters, setFilters] = useState({ search: "", status: "", client: "", event_type: "", internal_status: "", date_from: "", date_to: "" });
@@ -1789,52 +2057,54 @@ function EventsScreen({ refs, mutate, reloadKey }) {
   const latestPayment = checkoutPreference || budget?.latest_payment;
   const checkoutUrl = latestPayment?.init_point || latestPayment?.preference_init_point || latestPayment?.sandbox_init_point || latestPayment?.preference_sandbox_init_point || null;
   const selectedBudgetPayments = refs.eventBudgetPayments.filter((payment) => String(payment.event_id) === String(selectedEventId));
+  const publicPaymentLink = selectedEvent ? `${window.location.origin}/pagar-evento/${selectedEvent.public_payment_token}/` : "";
+  function paidForBudgetItem(itemId) {
+    return selectedBudgetPayments
+      .filter((payment) => String(payment.budget_item) === String(itemId) && payment.status === "approved")
+      .reduce((total, payment) => total + Number(payment.amount || 0), 0);
+  }
+  function pendingForBudgetItem(item) {
+    return Math.max(Number(item?.total || 0) - paidForBudgetItem(item?.id), 0);
+  }
 
   return (
     <>
-      <PageHeader title="Ficha de eventos" kicker="Etapa 1">
-        Alta completa, filtros por fecha y cliente, y una ficha editable con contexto operativo sin romper la integracion actual con caja, proveedores y personal.
+      <PageHeader
+        title="Evento 360"
+        kicker="Eventos"
+        actions={<Button onClick={() => setEventDialogs({ ...eventDialogs, create: true })}>Nuevo evento</Button>}
+      >
+        Ficha unica con cliente, monto, opcionales, cobranzas, proveedores, personal, caja, comprobantes y auditoria.
       </PageHeader>
       <div className="row g-3">
         <div className="col-xl-4">
+          <ActionDialog open={eventDialogs.create} title="Nuevo evento" onClose={() => setEventDialogs({ ...eventDialogs, create: false })}>
           <form
-            className="work-card"
             onSubmit={(e) => {
               e.preventDefault();
               mutate(async () => {
-                await api("/clients/", { method: "POST", body: JSON.stringify(client) });
-                setClient({ name: "", phone: "", email: "", notes: "" });
-              }, "Cliente creado");
-            }}
-          >
-            <h4 className="section-title">Cliente rapido</h4>
-            <TextInput label="Nombre" value={client.name} onChange={(v) => setClient({ ...client, name: v })} required />
-            <TextInput label="Telefono" value={client.phone} onChange={(v) => setClient({ ...client, phone: v })} />
-            <TextInput label="Email" value={client.email} onChange={(v) => setClient({ ...client, email: v })} />
-            <TextAreaInput label="Notas" value={client.notes} onChange={(v) => setClient({ ...client, notes: v })} rows={2} />
-            <button className="btn btn-olive w-100 mt-2">Crear cliente</button>
-          </form>
-
-          <form
-            className="work-card mt-3"
-            onSubmit={(e) => {
-              e.preventDefault();
-              mutate(async () => {
-                const created = await api("/events/", { method: "POST", body: JSON.stringify(buildEventPayload(newEvent)) });
+                const created = await api("/events/create-with-client/", { method: "POST", body: JSON.stringify(buildEventWithClientPayload(newEvent)) });
                 setNewEvent(emptyEventForm());
                 setSelectedEventId(String(created.id));
-              }, "Evento creado");
+                setEventDialogs((state) => ({ ...state, create: false }));
+              }, "Evento y cliente creados");
             }}
           >
             <div className="d-flex justify-content-between align-items-center mb-2">
               <h4 className="section-title mb-0">Nuevo evento</h4>
-              <span className="text-muted small">Alta comercial y operativa</span>
+              <span className="text-muted small">Alta unica</span>
             </div>
-            <SelectInput label="Cliente" value={newEvent.client} onChange={(v) => setNewEvent({ ...newEvent, client: v })} options={refs.clients} labelFor={(c) => c.name} empty="Sin cliente asociado" />
+            <TextInput label="Cliente" value={newEvent.client_name} onChange={(v) => setNewEvent({ ...newEvent, client_name: v })} required />
+            <div className="row g-2">
+              <div className="col-md-6"><TextInput label="Telefono cliente" value={newEvent.client_phone} onChange={(v) => setNewEvent({ ...newEvent, client_phone: v })} /></div>
+              <div className="col-md-6"><TextInput label="Email cliente" type="email" value={newEvent.client_email} onChange={(v) => setNewEvent({ ...newEvent, client_email: v })} /></div>
+            </div>
             <TextInput label="Nombre del evento" value={newEvent.name} onChange={(v) => setNewEvent({ ...newEvent, name: v })} required />
             <div className="row g-2">
               <div className="col-md-6"><TextInput label="Tipo" value={newEvent.event_type} onChange={(v) => setNewEvent({ ...newEvent, event_type: v })} /></div>
               <div className="col-md-6"><TextInput label="Espacio / salon" value={newEvent.venue_space} onChange={(v) => setNewEvent({ ...newEvent, venue_space: v })} /></div>
+              <div className="col-md-6"><TextInput label="Monto base" type="number" value={newEvent.amount} onChange={(v) => setNewEvent({ ...newEvent, amount: v })} /></div>
+              <div className="col-md-6"><SelectInput label="Estado" value={newEvent.status} onChange={(v) => setNewEvent({ ...newEvent, status: v })} options={eventStatusOptions} labelFor={(option) => option.name} required /></div>
               <div className="col-md-6"><TextInput label="Fecha" type="date" value={newEvent.event_date} onChange={(v) => setNewEvent({ ...newEvent, event_date: v })} /></div>
               <div className="col-md-6"><TextInput label="Hora" type="time" value={newEvent.event_time} onChange={(v) => setNewEvent({ ...newEvent, event_time: v })} /></div>
             </div>
@@ -1847,6 +2117,7 @@ function EventsScreen({ refs, mutate, reloadKey }) {
             <TextAreaInput label="Funciones" value={newEvent.function_notes} onChange={(v) => setNewEvent({ ...newEvent, function_notes: v })} rows={2} />
             <button className="btn btn-earth w-100 mt-2">Crear evento</button>
           </form>
+          </ActionDialog>
 
           <div className="work-card mt-3">
             <h4 className="section-title">Filtros</h4>
@@ -1905,40 +2176,42 @@ function EventsScreen({ refs, mutate, reloadKey }) {
               <div className="row g-3 mb-3">
                 <div className="col-md-3">
                   <div className="metric-card h-100">
-                    <span className="text-muted small">Invitados referencia</span>
-                    <strong className="d-block">{overview?.event?.guest_count_total || 0}</strong>
+                    <span className="text-muted small">Total evento</span>
+                    <strong className="d-block">{money(overview?.financial?.event_total || 0)}</strong>
                   </div>
                 </div>
                 <div className="col-md-3">
                   <div className="metric-card h-100">
-                    <span className="text-muted small">Movimientos vinculados</span>
-                    <strong className="d-block">{overview?.linked_counts?.movements || 0}</strong>
+                    <span className="text-muted small">Cobrado</span>
+                    <strong className="d-block">{money(overview?.financial?.paid || 0)}</strong>
                   </div>
                 </div>
                 <div className="col-md-3">
                   <div className="metric-card h-100">
-                    <span className="text-muted small">Personal asignado</span>
-                    <strong className="d-block">{overview?.linked_counts?.assignments || 0}</strong>
+                    <span className="text-muted small">Pendiente</span>
+                    <strong className="d-block">{money(overview?.financial?.pending || 0)}</strong>
                   </div>
                 </div>
                   <div className="col-md-3">
                     <div className="metric-card h-100">
-                      <span className="text-muted small">Total presupuestado</span>
-                      <strong className="d-block">{money(overview?.budget_summary?.grand_total || 0)}</strong>
+                      <span className="text-muted small">Resultado</span>
+                      <strong className="d-block">{money(overview?.financial?.result || 0)}</strong>
                     </div>
                   </div>
               </div>
 
-              <div className="work-card mb-3">
-                <div className="d-flex justify-content-between align-items-center mb-3">
-                  <h4 className="section-title mb-0">Ficha del evento</h4>
-                  <span className="text-muted small">{loadingOverview ? "Actualizando resumen..." : "Detalle editable"}</span>
-                </div>
+              <ActionCard title="Ficha del evento" subtitle={loadingOverview ? "Actualizando resumen..." : `${selectedEvent.client_name || selectedEvent.contact_name || "Sin cliente"} · ${statusLabel(selectedEvent.status)}`}>
+                <Button variant="outlined" onClick={() => setEventDialogs({ ...eventDialogs, edit: true })}>Editar ficha</Button>
+              </ActionCard>
+              <ActionDialog open={eventDialogs.edit} title="Editar ficha del evento" onClose={() => setEventDialogs({ ...eventDialogs, edit: false })} maxWidth="lg">
                 <form
                   onSubmit={(e) => {
                     e.preventDefault();
                     mutate(
-                      () => api(`/events/${selectedEventId}/`, { method: "PUT", body: JSON.stringify(buildEventPayload(editingEvent)) }),
+                      async () => {
+                        await api(`/events/${selectedEventId}/`, { method: "PUT", body: JSON.stringify(buildEventPayload(editingEvent)) });
+                        setEventDialogs((state) => ({ ...state, edit: false }));
+                      },
                       "Evento actualizado",
                     );
                   }}
@@ -1977,7 +2250,80 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                     <button className="btn btn-earth">Guardar cambios</button>
                   </div>
                 </form>
+              </ActionDialog>
+
+              <div className="work-card mb-3">
+                <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+                  <div>
+                    <h4 className="section-title mb-0">Cobros y cierre</h4>
+                    <div className="text-muted small">Seña, entregas, link publico y congelado final del evento.</div>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-outline-dark"
+                    disabled={selectedEvent.status === "CLOSED"}
+                    onClick={() => {
+                      if (!window.confirm("Cerrar evento y congelar numeros finales?")) return;
+                      mutate(() => api(`/events/${selectedEventId}/close/`, { method: "POST", body: JSON.stringify({}) }), "Evento cerrado");
+                    }}
+                  >
+                    Cerrar evento
+                  </button>
+                </div>
+                <div className="row g-3">
+                  <div className="d-none">
+                    <TextInput label="Link de pago para cliente" value={publicPaymentLink} onChange={() => {}} />
+                    <button type="button" className="btn btn-sm btn-outline-dark" onClick={() => navigator.clipboard?.writeText(publicPaymentLink)}>Copiar link</button>
+                  </div>
+                  <div className="col-lg-12">
+                    <ActionCard title="Registrar ingreso" subtitle="Seña, entrega o cobro asociado a un item.">
+                      <Button onClick={() => setEventDialogs({ ...eventDialogs, payment: true })}>Registrar cobro</Button>
+                    </ActionCard>
+                  </div>
+                </div>
               </div>
+              <ActionDialog open={eventDialogs.payment} title="Registrar cobro del evento" onClose={() => setEventDialogs({ ...eventDialogs, payment: false })}>
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        mutate(async () => {
+                          await api(`/events/${selectedEventId}/register-payment/`, {
+                            method: "POST",
+                            body: JSON.stringify(eventPayment),
+                          });
+                          setEventPayment({ account: "", amount: "", payment_method: "Efectivo", description: "", is_deposit: true, budget_item: "" });
+                          setEventDialogs((state) => ({ ...state, payment: false }));
+                        }, "Cobro registrado");
+                      }}
+                    >
+                      <div className="row g-2">
+                        <div className="col-md-4"><SelectInput label="Cuenta" value={eventPayment.account} onChange={(v) => setEventPayment({ ...eventPayment, account: v })} options={refs.accounts} labelFor={(a) => a.name} required /></div>
+                        <div className="col-md-4"><TextInput label="Importe" type="number" value={eventPayment.amount} onChange={(v) => setEventPayment({ ...eventPayment, amount: v })} required /></div>
+                        <div className="col-md-4"><TextInput label="Medio" value={eventPayment.payment_method} onChange={(v) => setEventPayment({ ...eventPayment, payment_method: v })} /></div>
+                        <div className="col-md-6">
+                          <SelectInput
+                            label="Item"
+                            value={eventPayment.budget_item}
+                            onChange={(v) => {
+                              const item = (budget?.items || []).find((row) => String(row.id) === String(v));
+                              setEventPayment({ ...eventPayment, budget_item: v, amount: item ? String(pendingForBudgetItem(item) || item.total || "") : eventPayment.amount });
+                            }}
+                            options={budget?.items || []}
+                            labelFor={(item) => `${item.service_name} · pendiente ${money(pendingForBudgetItem(item))}`}
+                            empty="Pago general / seña"
+                          />
+                        </div>
+                        <div className="col-md-6 d-flex align-items-end">
+                          <div className="form-check mb-2">
+                            <input className="form-check-input" id="event-payment-deposit" type="checkbox" checked={eventPayment.is_deposit} onChange={(e) => setEventPayment({ ...eventPayment, is_deposit: e.target.checked })} />
+                            <label className="form-check-label" htmlFor="event-payment-deposit">Es seña</label>
+                          </div>
+                        </div>
+                        <div className="col-12"><TextInput label="Descripcion" value={eventPayment.description} onChange={(v) => setEventPayment({ ...eventPayment, description: v })} /></div>
+                      </div>
+                      <button className="btn btn-earth mt-2">Registrar cobro</button>
+                    </form>
+              </ActionDialog>
 
               <div className="row g-3">
                 <div className="col-lg-6">
@@ -2049,6 +2395,7 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                       ["code_code", "Codigo"],
                       [(row) => money(row.amount), "Importe"],
                       ["description", "Descripcion"],
+                      [(row) => <button className="btn btn-sm btn-outline-dark" onClick={() => downloadProtected(`/cash-movements/${row.id}/receipt/`, `comprobante-${row.id}.pdf`)}>PDF</button>, "Comp."],
                     ]} />
                   </div>
                   <div className="col-lg-6">
@@ -2079,6 +2426,26 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                       ["notes", "Notas"],
                     ]} />
                   </div>
+                  <div className="col-lg-6">
+                    <h4 className="section-title">Cobros del evento</h4>
+                    <SimpleTable rows={overview?.budget_payments || []} columns={[
+                      [(row) => statusLabel(row.status), "Estado"],
+                      ["budget_item_name", "Item"],
+                      [(row) => money(row.amount, row.currency), "Importe"],
+                      ["payment_method", "Medio"],
+                      ["cash_movement_account", "Cuenta"],
+                    ]} />
+                  </div>
+                  <div className="col-lg-6">
+                    <h4 className="section-title">Historial</h4>
+                    <SimpleTable rows={overview?.audit_entries || []} columns={[
+                      [(row) => row.created_at, "Fecha"],
+                      ["username", "Usuario"],
+                      ["action", "Accion"],
+                      ["model_name", "Objeto"],
+                      ["detail", "Detalle"],
+                    ]} />
+                  </div>
                 </div>
               </div>
 
@@ -2088,7 +2455,11 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                     <h4 className="section-title mb-0">Presupuesto comercial</h4>
                     <div className="text-muted small">Servicios, opcionales y total del evento.</div>
                   </div>
-                  <span className="text-muted small">{loadingBudget ? "Cargando presupuesto..." : `${budget?.item_count || 0} item(s)`}</span>
+                  <Stack direction="row" spacing={1}>
+                    <Button variant="outlined" disabled={!budget?.id} onClick={() => setEventDialogs({ ...eventDialogs, budget: true })}>Editar cabecera</Button>
+                    <Button disabled={!budget?.id} onClick={() => setEventDialogs({ ...eventDialogs, item: true })}>Agregar item</Button>
+                    <Chip label={loadingBudget ? "Cargando..." : `${budget?.item_count || 0} item(s)`} variant="outlined" />
+                  </Stack>
                 </div>
                 <div className="row g-3 mb-3">
                   <div className="col-md-3">
@@ -2181,13 +2552,16 @@ function EventsScreen({ refs, mutate, reloadKey }) {
 
                 <div className="row g-3">
                   <div className="col-lg-5">
+                    <ActionDialog open={eventDialogs.budget} title="Editar cabecera del presupuesto" onClose={() => setEventDialogs({ ...eventDialogs, budget: false })}>
                     <form
-                      className="work-card"
                       onSubmit={(e) => {
                         e.preventDefault();
                         if (!budget?.id) return;
                         mutate(
-                          () => api(`/event-budgets/${budget.id}/`, { method: "PUT", body: JSON.stringify({ ...budget, ...budgetForm, event: selectedEventId }) }),
+                          async () => {
+                            await api(`/event-budgets/${budget.id}/`, { method: "PUT", body: JSON.stringify({ ...budget, ...budgetForm, event: selectedEventId }) });
+                            setEventDialogs((state) => ({ ...state, budget: false }));
+                          },
                           "Presupuesto actualizado",
                         );
                       }}
@@ -2199,9 +2573,10 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                       <TextAreaInput label="Notas internas" value={budgetForm.internal_notes} onChange={(v) => setBudgetForm({ ...budgetForm, internal_notes: v })} rows={3} />
                       <button className="btn btn-outline-dark w-100 mt-2" disabled={!budget?.id}>Guardar cabecera</button>
                     </form>
+                    </ActionDialog>
 
+                    <ActionDialog open={eventDialogs.item} title="Agregar item al presupuesto" onClose={() => setEventDialogs({ ...eventDialogs, item: false })}>
                     <form
-                      className="work-card mt-3"
                       onSubmit={(e) => {
                         e.preventDefault();
                         if (!budget?.id) return;
@@ -2218,6 +2593,7 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                               }),
                             });
                             setBudgetItem(emptyBudgetItemForm());
+                            setEventDialogs((state) => ({ ...state, item: false }));
                           },
                           "Item de presupuesto agregado",
                         );
@@ -2239,9 +2615,10 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                       <TextAreaInput label="Notas" value={budgetItem.notes} onChange={(v) => setBudgetItem({ ...budgetItem, notes: v })} rows={2} />
                       <button className="btn btn-earth w-100 mt-2" disabled={!budget?.id}>Agregar item</button>
                     </form>
+                    </ActionDialog>
                   </div>
 
-                  <div className="col-lg-7">
+                  <div className="col-lg-12">
                     <div className="work-card h-100">
                       <div className="d-flex justify-content-between align-items-center mb-3">
                         <h4 className="section-title mb-0">Items del presupuesto</h4>
@@ -2250,7 +2627,48 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                       {!budget?.items?.length ? (
                         <div className="text-muted text-center py-4">Todavia no hay items cargados para este evento.</div>
                       ) : (
-                        <div className="d-flex flex-column gap-3">
+                        <div className="budget-items-editor">
+                          <SimpleTable
+                            rows={budget.items}
+                            columns={[
+                              ["service_name", "Servicio"],
+                              ["category", "Categoria"],
+                              [(row) => row.is_optional ? "Opcional" : "Base", "Tipo"],
+                              [(row) => money(row.total || 0), "Total"],
+                              [(row) => (
+                                <Stack direction="row" spacing={1}>
+                                  <Button size="small" variant="outlined" onClick={() => setEditingBudgetItem({ ...row })}>Editar</Button>
+                                  <Button
+                                    size="small"
+                                    onClick={() => {
+                                      if (!budget?.id) return;
+                                      mutate(async () => {
+                                        const preference = await api("/event-budget-payments/create-preference/", {
+                                          method: "POST",
+                                          body: JSON.stringify({ budget: budget.id, budget_item: row.id }),
+                                        });
+                                        const url = preference.init_point || preference.sandbox_init_point;
+                                        if (url) window.open(url, "_blank", "noreferrer");
+                                      }, "Checkout del item preparado");
+                                    }}
+                                  >
+                                    MP
+                                  </Button>
+                                  <Button
+                                    size="small"
+                                    color="error"
+                                    variant="outlined"
+                                    onClick={() => {
+                                      if (!window.confirm(`Eliminar "${row.service_name}" del presupuesto?`)) return;
+                                      mutate(() => api(`/event-budget-items/${row.id}/`, { method: "DELETE" }), "Item eliminado");
+                                    }}
+                                  >
+                                    Eliminar
+                                  </Button>
+                                </Stack>
+                              ), "Acciones"],
+                            ]}
+                          />
                           {budget.items.map((item) => (
                             <form
                               key={item.id}
@@ -2437,6 +2855,45 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                   </div>
                 </div>
               </div>
+              <ActionDialog open={Boolean(editingBudgetItem)} title="Editar item del presupuesto" onClose={() => setEditingBudgetItem(null)}>
+                {editingBudgetItem ? (
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      mutate(
+                        async () => {
+                          await api(`/event-budget-items/${editingBudgetItem.id}/`, {
+                            method: "PUT",
+                            body: JSON.stringify({
+                              ...editingBudgetItem,
+                              quantity: Number(editingBudgetItem.quantity || 0),
+                              unit_price: Number(editingBudgetItem.unit_price || 0),
+                              sort_order: Number(editingBudgetItem.sort_order || 0),
+                            }),
+                          });
+                          setEditingBudgetItem(null);
+                        },
+                        "Item actualizado",
+                      );
+                    }}
+                  >
+                    <TextInput label="Servicio" value={editingBudgetItem.service_name} onChange={(v) => setEditingBudgetItem({ ...editingBudgetItem, service_name: v })} required />
+                    <div className="row g-2">
+                      <div className="col-md-6"><TextInput label="Categoria" value={editingBudgetItem.category || ""} onChange={(v) => setEditingBudgetItem({ ...editingBudgetItem, category: v })} /></div>
+                      <div className="col-md-6"><TextInput label="Unidad" value={editingBudgetItem.unit_label || ""} onChange={(v) => setEditingBudgetItem({ ...editingBudgetItem, unit_label: v })} /></div>
+                      <div className="col-md-4"><TextInput label="Cantidad" type="number" value={editingBudgetItem.quantity} onChange={(v) => setEditingBudgetItem({ ...editingBudgetItem, quantity: v })} required /></div>
+                      <div className="col-md-4"><TextInput label="Precio unitario" type="number" value={editingBudgetItem.unit_price} onChange={(v) => setEditingBudgetItem({ ...editingBudgetItem, unit_price: v })} required /></div>
+                      <div className="col-md-4"><TextInput label="Orden" type="number" value={editingBudgetItem.sort_order} onChange={(v) => setEditingBudgetItem({ ...editingBudgetItem, sort_order: v })} /></div>
+                    </div>
+                    <div className="form-check mt-2 mb-2">
+                      <input className="form-check-input" id="edit-budget-item-optional" type="checkbox" checked={Boolean(editingBudgetItem.is_optional)} onChange={(e) => setEditingBudgetItem({ ...editingBudgetItem, is_optional: e.target.checked })} />
+                      <label className="form-check-label" htmlFor="edit-budget-item-optional">Es opcional</label>
+                    </div>
+                    <TextAreaInput label="Notas" value={editingBudgetItem.notes || ""} onChange={(v) => setEditingBudgetItem({ ...editingBudgetItem, notes: v })} rows={2} />
+                    <Button type="submit">Guardar item</Button>
+                  </form>
+                ) : null}
+              </ActionDialog>
             </>
           ) : (
             <div className="work-card">
@@ -2451,10 +2908,11 @@ function EventsScreen({ refs, mutate, reloadKey }) {
 }
 
 function GraduationScreen({ refs, mutate }) {
-  const [form, setForm] = useState({ event: "", price_per_ticket: "", capacity: "", max_tickets_per_graduate: "", active: true, notes: "" });
-  const [priceForm, setPriceForm] = useState({ price: "", valid_from: todayISO().slice(0, 8) + "01", notes: "" });
+  const [form, setForm] = useState({ event: "", price_per_ticket: "", valid_from: todayISO().slice(0, 8) + "01", valid_until: "", capacity: "", max_tickets_per_graduate: "", active: true, notes: "" });
+  const [priceForm, setPriceForm] = useState({ price: "", valid_from: todayISO().slice(0, 8) + "01", valid_until: "", notes: "" });
   const [graduate, setGraduate] = useState({ graduation_event: "", first_name: "", last_name: "", notes: "" });
   const [selected, setSelected] = useState("");
+  const [graduationDialogs, setGraduationDialogs] = useState({ link: false, price: false, graduate: false });
   const selectedEvent = refs.graduationEvents.find((row) => String(row.id) === String(selected));
   const graduates = refs.graduates.filter((row) => String(row.graduation_event) === String(selected));
   const purchases = refs.ticketPurchases.filter((row) => String(row.graduation_event) === String(selected));
@@ -2467,29 +2925,40 @@ function GraduationScreen({ refs, mutate }) {
       </PageHeader>
       <div className="row g-3">
         <div className="col-lg-4">
+          <ActionCard title="Links de egresados" subtitle="Crear link y administrar evento seleccionado.">
+            <Button onClick={() => setGraduationDialogs({ ...graduationDialogs, link: true })}>Nuevo link</Button>
+          </ActionCard>
+          <ActionDialog open={graduationDialogs.link} title="Nuevo link de egresados" onClose={() => setGraduationDialogs({ ...graduationDialogs, link: false })}>
           <form
-            className="work-card"
             onSubmit={(event) => {
               event.preventDefault();
               mutate(
-                () => api("/graduation-events/", { method: "POST", body: JSON.stringify({ ...form, capacity: form.capacity || null, max_tickets_per_graduate: form.max_tickets_per_graduate || null }) }),
+                async () => {
+                  await api("/graduation-events/", { method: "POST", body: JSON.stringify({ ...form, valid_until: form.valid_until || null, capacity: form.capacity || null, max_tickets_per_graduate: form.max_tickets_per_graduate || null }) });
+                  setGraduationDialogs((state) => ({ ...state, link: false }));
+                },
                 "Evento de egresados creado",
               );
             }}
           >
             <h4 className="section-title">Nuevo link</h4>
             <SelectInput label="Evento base" value={form.event} onChange={(v) => setForm({ ...form, event: v })} options={refs.events} labelFor={(e) => e.name} required />
-            <TextInput label="Precio tarjeta" type="number" value={form.price_per_ticket} onChange={(v) => setForm({ ...form, price_per_ticket: v })} required />
+            <TextInput label="Precio mensual tarjeta" type="number" value={form.price_per_ticket} onChange={(v) => setForm({ ...form, price_per_ticket: v })} required />
+            <div className="row g-2">
+              <div className="col-md-6"><TextInput label="Vigente desde" type="date" value={form.valid_from} onChange={(v) => setForm({ ...form, valid_from: v })} /></div>
+              <div className="col-md-6"><TextInput label="Vigente hasta" type="date" value={form.valid_until} onChange={(v) => setForm({ ...form, valid_until: v })} /></div>
+            </div>
             <TextInput label="Cupo" type="number" value={form.capacity} onChange={(v) => setForm({ ...form, capacity: v })} />
             <TextInput label="Maximo por egresado" type="number" value={form.max_tickets_per_graduate} onChange={(v) => setForm({ ...form, max_tickets_per_graduate: v })} />
             <TextAreaInput label="Notas" value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} rows={2} />
             <button className="btn btn-earth w-100 mt-2">Crear link</button>
           </form>
+          </ActionDialog>
           <div className="work-card mt-3">
             <SelectInput label="Evento egresados" value={selected} onChange={(v) => {
               setSelected(v);
               setGraduate({ ...graduate, graduation_event: v });
-            }} options={refs.graduationEvents} labelFor={(e) => `${e.event_name} - ${money(e.price_per_ticket)}`} />
+            }} options={refs.graduationEvents} labelFor={(e) => `${e.event_name} - ${money(e.current_price || e.price_per_ticket)}`} />
             {publicLink && (
               <div className="mt-2">
                 <TextInput label="Link publico" value={publicLink} onChange={() => {}} />
@@ -2510,24 +2979,36 @@ function GraduationScreen({ refs, mutate }) {
           {selectedEvent ? (
             <div className="row g-3">
               <div className="col-md-5">
+                <ActionCard title="Acciones" subtitle="Precios y lista de egresados.">
+                  <Button variant="outlined" onClick={() => setGraduationDialogs({ ...graduationDialogs, price: true })}>Precio mensual</Button>
+                  <Button onClick={() => setGraduationDialogs({ ...graduationDialogs, graduate: true })}>Agregar egresado</Button>
+                </ActionCard>
+                <ActionDialog open={graduationDialogs.price} title="Precio mensual de tarjeta" onClose={() => setGraduationDialogs({ ...graduationDialogs, price: false })}>
                 <form
-                  className="work-card mb-3"
                   onSubmit={(event) => {
                     event.preventDefault();
-                    mutate(() => api(`/graduation-events/${selected}/ticket-price/`, { method: "POST", body: JSON.stringify(priceForm) }), "Precio mensual guardado");
+                    mutate(async () => {
+                      await api(`/graduation-events/${selected}/ticket-price/`, { method: "POST", body: JSON.stringify({ ...priceForm, valid_until: priceForm.valid_until || null }) });
+                      setGraduationDialogs((state) => ({ ...state, price: false }));
+                    }, "Precio mensual guardado");
                   }}
                 >
                   <h4 className="section-title">Precio mensual</h4>
                   <TextInput label="Vigente desde" type="date" value={priceForm.valid_from} onChange={(v) => setPriceForm({ ...priceForm, valid_from: v })} />
+                  <TextInput label="Vigente hasta" type="date" value={priceForm.valid_until} onChange={(v) => setPriceForm({ ...priceForm, valid_until: v })} />
                   <TextInput label="Precio" type="number" value={priceForm.price} onChange={(v) => setPriceForm({ ...priceForm, price: v })} required />
                   <TextInput label="Notas" value={priceForm.notes} onChange={(v) => setPriceForm({ ...priceForm, notes: v })} />
                   <button className="btn btn-outline-dark w-100 mt-2">Guardar precio</button>
                 </form>
+                </ActionDialog>
+                <ActionDialog open={graduationDialogs.graduate} title="Agregar egresado" onClose={() => setGraduationDialogs({ ...graduationDialogs, graduate: false })}>
                 <form
-                  className="work-card"
                   onSubmit={(event) => {
                     event.preventDefault();
-                    mutate(() => api("/graduates/", { method: "POST", body: JSON.stringify({ ...graduate, graduation_event: selected }) }), "Egresado agregado");
+                    mutate(async () => {
+                      await api("/graduates/", { method: "POST", body: JSON.stringify({ ...graduate, graduation_event: selected }) });
+                      setGraduationDialogs((state) => ({ ...state, graduate: false }));
+                    }, "Egresado agregado");
                   }}
                 >
                   <h4 className="section-title">Agregar egresado</h4>
@@ -2536,6 +3017,7 @@ function GraduationScreen({ refs, mutate }) {
                   <TextAreaInput label="Notas" value={graduate.notes} onChange={(v) => setGraduate({ ...graduate, notes: v })} rows={2} />
                   <button className="btn btn-olive w-100 mt-2">Agregar</button>
                 </form>
+                </ActionDialog>
               </div>
               <div className="col-md-7">
                 <div className="work-card h-100">
@@ -2633,7 +3115,7 @@ function PublicGraduationPage({ token }) {
   }
 
   return (
-    <div className="app-shell">
+    <div className="app-shell public-shell">
       <main className="main-stage">
         <section className="hero-card">
           <div className="pill mb-3">Caja Moments</div>
@@ -2646,6 +3128,79 @@ function PublicGraduationPage({ token }) {
             <TextInput label="Cantidad de tarjetas" type="number" value={form.quantity} onChange={(v) => setForm({ ...form, quantity: v })} required />
             <TextInput label="Email" type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} required />
             <button className="btn btn-earth w-100 mt-2">Continuar a Mercado Pago</button>
+          </form>
+        </section>
+      </main>
+    </div>
+  );
+}
+
+function PublicEventPaymentPage({ token }) {
+  const [eventData, setEventData] = useState(null);
+  const [form, setForm] = useState({ budget_item: "", amount: "" });
+  const [status, setStatus] = useState(null);
+
+  function load() {
+    api(`/event-payments/${token}/public/`, { token: "" })
+      .then(setEventData)
+      .catch((error) => setStatus({ type: "error", message: prettifyErrorMessage(error.message) }));
+  }
+
+  useEffect(() => {
+    load();
+  }, [token]);
+
+  async function submit(event) {
+    event.preventDefault();
+    try {
+      const payment = await api(`/event-payments/${token}/create-preference/`, {
+        method: "POST",
+        body: JSON.stringify(form.budget_item ? { budget_item: form.budget_item } : { amount: form.amount }),
+        token: "",
+      });
+      setStatus({ type: "success", message: "Abriendo Mercado Pago..." });
+      const url = payment.init_point || payment.sandbox_init_point;
+      if (url) window.location.href = url;
+    } catch (error) {
+      setStatus({ type: "error", message: prettifyErrorMessage(error.message) });
+    }
+  }
+
+  const items = eventData?.items || [];
+  const selectedItem = items.find((item) => String(item.id) === String(form.budget_item));
+
+  return (
+    <div className="app-shell public-shell">
+      <main className="main-stage">
+        <section className="hero-card">
+          <div className="pill mb-3">Caja Moments</div>
+          <h2 className="mb-2">{eventData?.event?.name || "Pago de evento"}</h2>
+          <p className="text-muted">
+            {eventData ? `${eventData.event.client_name || "Cliente"} · Pendiente ${money(eventData.financial?.pending || 0)}` : "Cargando evento..."}
+          </p>
+          <AlertLine status={status} />
+          <div className="row g-3 mb-3">
+            <div className="col-md-4"><div className="metric-card"><span className="text-muted small">Total</span><strong>{money(eventData?.financial?.event_total || 0)}</strong></div></div>
+            <div className="col-md-4"><div className="metric-card"><span className="text-muted small">Pagado</span><strong>{money(eventData?.financial?.paid || 0)}</strong></div></div>
+            <div className="col-md-4"><div className="metric-card"><span className="text-muted small">Pendiente</span><strong>{money(eventData?.financial?.pending || 0)}</strong></div></div>
+          </div>
+          <form className="work-card" onSubmit={submit}>
+            <SelectInput
+              label="Que queres pagar"
+              value={form.budget_item}
+              onChange={(v) => setForm({ budget_item: v, amount: "" })}
+              options={items.filter((item) => Number(item.pending || item.total || 0) > 0)}
+              labelFor={(item) => `${item.is_optional ? "Opcional" : "Evento"} · ${item.service_name} · ${money(item.pending || item.total)}`}
+              empty="Seña u otro importe"
+            />
+            {!form.budget_item ? (
+              <TextInput label="Importe" type="number" value={form.amount} onChange={(v) => setForm({ ...form, amount: v })} required />
+            ) : (
+              <div className="text-muted small mb-2">
+                Se va a generar un checkout por {money(selectedItem?.pending || selectedItem?.total || 0)}.
+              </div>
+            )}
+            <button className="btn btn-earth w-100 mt-2" disabled={!form.budget_item && Number(form.amount || 0) <= 0}>Continuar a Mercado Pago</button>
           </form>
         </section>
       </main>
@@ -2666,9 +3221,12 @@ function TaxesScreen({ refs, mutate, reloadKey }) {
     remind_before_days: 0,
   });
   const [reminders, setReminders] = useState([]);
+  const [taxPayments, setTaxPayments] = useState([]);
+  const [taxDialog, setTaxDialog] = useState(false);
 
   useEffect(() => {
     api("/reminders/?status=PENDING").then((data) => setReminders(unwrap(data)));
+    apiList("/tax-payments/").then(setTaxPayments);
   }, [reloadKey]);
 
   return (
@@ -2678,9 +3236,16 @@ function TaxesScreen({ refs, mutate, reloadKey }) {
       </PageHeader>
       <div className="row g-3">
         <div className="col-lg-4">
+          <ActionCard title="Impuestos" subtitle="Pagos y recordatorios de vencimientos.">
+            <Button onClick={() => setTaxDialog(true)}>Registrar pago</Button>
+          </ActionCard>
+          <ActionDialog open={taxDialog} title="Pago de impuesto" onClose={() => setTaxDialog(false)}>
           <form className="work-card" onSubmit={(e) => {
             e.preventDefault();
-            mutate(() => api("/tax-payments/", { method: "POST", body: JSON.stringify(payment) }), "Pago de impuesto registrado");
+            mutate(async () => {
+              await api("/tax-payments/", { method: "POST", body: JSON.stringify(payment) });
+              setTaxDialog(false);
+            }, "Pago de impuesto registrado");
           }}>
             <h4 className="section-title">Pago de impuesto</h4>
             <SelectInput label="Tipo" value={payment.tax_type} onChange={(v) => setPayment({ ...payment, tax_type: v })} options={refs.taxTypes} labelFor={(t) => t.name} required />
@@ -2692,6 +3257,7 @@ function TaxesScreen({ refs, mutate, reloadKey }) {
             <TextInput label="Vencimiento manual" type="date" value={payment.reminder_due_date} onChange={(v) => setPayment({ ...payment, reminder_due_date: v })} />
             <button className="btn btn-earth w-100 mt-2">Registrar impuesto</button>
           </form>
+          </ActionDialog>
         </div>
         <div className="col-lg-8">
           <div className="work-card">
@@ -2707,6 +3273,34 @@ function TaxesScreen({ refs, mutate, reloadKey }) {
                 }
                 mutate(() => api(`/reminders/${row.id}/complete/`, { method: "POST", body: JSON.stringify({}) }), "Recordatorio completado");
               }}>Completar</button>, ""],
+            ]} />
+          </div>
+          <div className="work-card mt-3">
+            <div className="d-flex justify-content-between align-items-center mb-2">
+              <h4 className="section-title mb-0">Historico de pagos</h4>
+              <button
+                className="btn btn-sm btn-outline-dark"
+                onClick={() =>
+                  exportRows("impuestos-pagos.csv", [
+                    { label: "Fecha", value: "payment_date" },
+                    { label: "Impuesto", value: "tax_type_name" },
+                    { label: "Periodo", value: "period" },
+                    { label: "Cuenta", value: "account_name" },
+                    { label: "Importe", value: "amount" },
+                    { label: "Notas", value: "notes" },
+                  ], taxPayments)
+                }
+              >
+                Exportar
+              </button>
+            </div>
+            <SimpleTable rows={taxPayments} columns={[
+              [(row) => formatDate(row.payment_date), "Fecha"],
+              ["tax_type_name", "Impuesto"],
+              ["period", "Periodo"],
+              ["account_name", "Cuenta"],
+              [(row) => money(row.amount), "Importe"],
+              ["notes", "Notas"],
             ]} />
           </div>
         </div>
@@ -3006,32 +3600,32 @@ function ReportsScreen({ refs }) {
 
 function SimpleTable({ rows, columns }) {
   if (!columns.length) {
-    return <div className="text-muted py-4 text-center">Elegi un reporte para ver los datos.</div>;
+    return <Typography color="text.secondary" align="center" sx={{ py: 4 }}>Elegi un reporte para ver los datos.</Typography>;
   }
   return (
-    <div className="table-responsive soft-table">
-      <table className="table table-hover align-middle mb-0">
-        <thead>
-          <tr>
-            {columns.map(([, label], index) => <th key={index}>{label}</th>)}
-          </tr>
-        </thead>
-        <tbody>
+    <TableContainer component={Card} className="soft-table">
+      <Table size="small">
+        <TableHead>
+          <TableRow>
+            {columns.map(([, label], index) => <TableCell key={index}>{label}</TableCell>)}
+          </TableRow>
+        </TableHead>
+        <TableBody>
           {rows.length === 0 && (
-            <tr>
-              <td colSpan={columns.length} className="text-center text-muted py-4">Sin datos todavia</td>
-            </tr>
+            <TableRow>
+              <TableCell colSpan={columns.length} align="center" sx={{ color: "text.secondary", py: 4 }}>Sin datos todavia</TableCell>
+            </TableRow>
           )}
           {rows.map((row, rowIndex) => (
-            <tr key={row.id || rowIndex}>
+            <TableRow key={row.id || rowIndex} hover>
               {columns.map(([accessor], columnIndex) => (
-                <td key={columnIndex}>{typeof accessor === "function" ? accessor(row) : row[accessor]}</td>
+                <TableCell key={columnIndex}>{typeof accessor === "function" ? accessor(row) : row[accessor]}</TableCell>
               ))}
-            </tr>
+            </TableRow>
           ))}
-        </tbody>
-      </table>
-    </div>
+        </TableBody>
+      </Table>
+    </TableContainer>
   );
 }
 
