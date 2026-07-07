@@ -23,12 +23,19 @@ from .views import (
     EventBudgetViewSet,
     EventStaffAssignmentViewSet,
     EventViewSet,
+    GraduateViewSet,
+    GraduationEventGraduateSearchAPIView,
+    GraduationEventPublicAPIView,
+    GraduationEventViewSet,
     MovementCodeViewSet,
     ProviderLedgerEntryViewSet,
     ProviderViewSet,
     ReminderViewSet,
     ReportsViewSet,
     TaxPaymentViewSet,
+    TicketPurchasePreferenceAPIView,
+    TicketPurchaseViewSet,
+    TicketPurchaseWebhookAPIView,
     TaxTypeViewSet,
 )
 
@@ -51,6 +58,9 @@ router.register("event-budget-items", EventBudgetItemViewSet)
 router.register("event-budget-payments", EventBudgetPaymentViewSet)
 router.register("event-staff-assignments", EventStaffAssignmentViewSet)
 router.register("employee-payments", EmployeePaymentViewSet)
+router.register("graduation-events", GraduationEventViewSet)
+router.register("graduates", GraduateViewSet)
+router.register("ticket-purchases", TicketPurchaseViewSet)
 router.register("tax-types", TaxTypeViewSet)
 router.register("tax-payments", TaxPaymentViewSet)
 router.register("reminders", ReminderViewSet)
@@ -64,5 +74,9 @@ urlpatterns = [
     path("dashboard/", DashboardAPIView.as_view(), name="dashboard"),
     path("event-budget-payments/create-preference/", EventBudgetPaymentPreferenceAPIView.as_view(), name="event-budget-payment-preference"),
     path("event-budget-payments/webhook/", EventBudgetPaymentWebhookAPIView.as_view(), name="event-budget-payment-webhook"),
+    path("graduation-events/<uuid:token>/public/", GraduationEventPublicAPIView.as_view(), name="graduation-event-public"),
+    path("graduation-events/<uuid:token>/graduates/search/", GraduationEventGraduateSearchAPIView.as_view(), name="graduation-event-graduate-search"),
+    path("ticket-purchases/create-preference/", TicketPurchasePreferenceAPIView.as_view(), name="ticket-purchase-preference"),
+    path("ticket-purchases/webhook/", TicketPurchaseWebhookAPIView.as_view(), name="ticket-purchase-webhook"),
     path("", include(router.urls)),
 ]

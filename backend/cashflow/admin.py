@@ -17,11 +17,15 @@ from .models import (
     EventBudgetPayment,
     EventBudgetPaymentWebhookLog,
     EventStaffAssignment,
+    Graduate,
+    GraduationEvent,
     MovementCode,
     Provider,
     ProviderLedgerEntry,
     Reminder,
     TaxPayment,
+    TicketPurchase,
+    TicketPurchaseWebhookLog,
     TaxType,
 )
 from .services import void_cash_movement
@@ -173,6 +177,45 @@ class EventStaffAssignmentAdmin(AuditReadonlyMixin, admin.ModelAdmin):
     list_display = ("event", "employee", "role", "work_date", "total_amount", "status")
     search_fields = ("event__name", "employee__first_name", "employee__last_name", "employee__alias", "role__name")
     list_filter = ("status", "role", "work_date")
+
+
+@admin.register(GraduationEvent)
+class GraduationEventAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("event", "price_per_ticket", "capacity", "paid_ticket_count", "active", "public_token")
+    search_fields = ("event__name", "event__client__name", "notes")
+    list_filter = ("active",)
+    readonly_fields = AuditReadonlyMixin.readonly_fields + ("public_token",)
+
+
+@admin.register(Graduate)
+class GraduateAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("last_name", "first_name", "graduation_event")
+    search_fields = ("first_name", "last_name", "notes", "graduation_event__event__name")
+    list_filter = ("graduation_event",)
+
+
+@admin.register(TicketPurchase)
+class TicketPurchaseAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("created_at", "graduation_event", "graduate", "quantity", "total_amount", "email", "status", "cash_movement")
+    search_fields = ("graduate__first_name", "graduate__last_name", "email", "mp_preference_id", "mp_payment_id")
+    list_filter = ("status", "graduation_event")
+    readonly_fields = AuditReadonlyMixin.readonly_fields + (
+        "total_amount",
+        "idempotency_key",
+        "mp_preference_id",
+        "preference_init_point",
+        "preference_sandbox_init_point",
+        "mp_payment_id",
+        "cash_movement",
+    )
+
+
+@admin.register(TicketPurchaseWebhookLog)
+class TicketPurchaseWebhookLogAdmin(admin.ModelAdmin):
+    list_display = ("topic", "mp_notification_id", "processed", "received_at")
+    search_fields = ("mp_notification_id", "deduplication_key", "error")
+    list_filter = ("topic", "processed", "received_at")
+    readonly_fields = ("mp_notification_id", "deduplication_key", "topic", "payload", "processed", "error", "received_at")
 
 
 @admin.register(EmployeePayment)

@@ -192,6 +192,9 @@ class Event(TimestampedModel):
     protocol_notes = models.TextField(blank=True)
     beverage_notes = models.TextField(blank=True)
     additional_notes = models.TextField(blank=True)
+    schedule_notes = models.TextField(blank=True)
+    sketch = models.FileField(upload_to="event-sketches/", blank=True)
+    function_notes = models.TextField(blank=True)
     operational_notes = models.TextField(blank=True)
     internal_status = models.CharField(max_length=120, blank=True)
     contact_name = models.CharField(max_length=160, blank=True)
@@ -288,6 +291,7 @@ class EventBudgetPayment(TimestampedModel):
         IN_PROCESS = "in_process", "En proceso"
 
     budget = models.ForeignKey(EventBudget, on_delete=models.PROTECT, related_name="payments")
+    budget_item = models.ForeignKey(EventBudgetItem, null=True, blank=True, on_delete=models.PROTECT, related_name="payments")
     idempotency_key = models.CharField(max_length=120, unique=True, default=uuid.uuid4)
     mp_preference_id = models.CharField(max_length=100, blank=True)
     preference_init_point = models.URLField(max_length=1000, blank=True)
@@ -326,6 +330,108 @@ class EventBudgetPayment(TimestampedModel):
 
     def __str__(self):
         return f"{self.budget.event} - {self.status} - {self.amount}"
+
+
+class GraduationEvent(TimestampedModel):
+    event = models.OneToOneField(Event, on_delete=models.PROTECT, related_name="graduation")
+    price_per_ticket = models.DecimalField(
+        max_digits=MONEY_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+        validators=[MinValueValidator(MONEY_MIN)],
+    )
+    capacity = models.PositiveIntegerField(null=True, blank=True)
+    public_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    active = models.BooleanField(default=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["event__event_date", "event__name"]
+
+    def __str__(self):
+        return f"Egresados - {self.event}"
+
+    def paid_ticket_count(self):
+        return self.purchases.filter(status=TicketPurchase.Status.PAID).aggregate(total=Sum("quantity"))["total"] or 0
+
+
+class Graduate(TimestampedModel):
+    graduation_event = models.ForeignKey(GraduationEvent, on_delete=models.CASCADE, related_name="graduates")
+    first_name = models.CharField(max_length=100)
+    last_name = models.CharField(max_length=100)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["last_name", "first_name"]
+        unique_together = [("graduation_event", "first_name", "last_name")]
+
+    def __str__(self):
+        return f"{self.first_name} {self.last_name}".strip()
+
+
+class TicketPurchase(TimestampedModel):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pendiente"
+        IN_PROCESS = "in_process", "En proceso"
+        PAID = "paid", "Pagado"
+        CANCELLED = "cancelled", "Cancelado"
+        REFUNDED = "refunded", "Reembolsado"
+
+    graduation_event = models.ForeignKey(GraduationEvent, on_delete=models.PROTECT, related_name="purchases")
+    graduate = models.ForeignKey(Graduate, on_delete=models.PROTECT, related_name="ticket_purchases")
+    quantity = models.PositiveIntegerField(validators=[MinValueValidator(1)])
+    total_amount = models.DecimalField(max_digits=MONEY_MAX_DIGITS, decimal_places=MONEY_DECIMAL_PLACES)
+    email = models.EmailField()
+    idempotency_key = models.CharField(max_length=120, unique=True, default=uuid.uuid4)
+    mp_preference_id = models.CharField(max_length=100, blank=True)
+    preference_init_point = models.URLField(max_length=1000, blank=True)
+    preference_sandbox_init_point = models.URLField(max_length=1000, blank=True)
+    mp_payment_id = models.CharField(max_length=100, blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    status_detail = models.CharField(max_length=100, blank=True)
+    payment_method = models.CharField(max_length=50, blank=True)
+    payment_type = models.CharField(max_length=50, blank=True)
+    cash_movement = models.OneToOneField(
+        "CashMovement",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="ticket_purchase",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["mp_preference_id"],
+                condition=~models.Q(mp_preference_id=""),
+                name="unique_ticket_purchase_mp_preference",
+            ),
+            models.UniqueConstraint(
+                fields=["mp_payment_id"],
+                condition=~models.Q(mp_payment_id=""),
+                name="unique_ticket_purchase_mp_payment",
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        self.total_amount = self.graduation_event.price_per_ticket * Decimal(self.quantity or 0)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.graduate} - {self.quantity} tarjetas"
+
+
+class TicketPurchaseWebhookLog(models.Model):
+    mp_notification_id = models.CharField(max_length=100)
+    deduplication_key = models.CharField(max_length=64, unique=True)
+    topic = models.CharField(max_length=50)
+    payload = models.JSONField(default=dict)
+    processed = models.BooleanField(default=False)
+    error = models.TextField(blank=True)
+    received_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Ticket {self.topic} - {self.mp_notification_id}"
 
 
 class EventBudgetPaymentWebhookLog(models.Model):

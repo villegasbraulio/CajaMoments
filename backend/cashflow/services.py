@@ -9,6 +9,7 @@ from urllib.parse import urlencode, urlsplit
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.mail import send_mail
 from django.db import transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
@@ -27,11 +28,14 @@ from .models import (
     EventBudgetItem,
     EventBudgetPayment,
     EventStaffAssignment,
+    Graduate,
+    GraduationEvent,
     MovementCode,
     Provider,
     ProviderLedgerEntry,
     Reminder,
     TaxPayment,
+    TicketPurchase,
     TaxType,
 )
 
@@ -247,12 +251,17 @@ class MercadoPagoClient:
     def create_budget_preference(self, payment):
         budget = payment.budget
         event = budget.event
+        title = f"Presupuesto {event.name}"
+        description = event.event_type or "Evento"
+        if payment.budget_item_id:
+            title = payment.budget_item.service_name
+            description = f"Item presupuesto - {event.name}"
         payload = {
             "items": [
                 {
-                    "id": f"event-budget:{budget.id}",
-                    "title": f"Presupuesto {event.name}",
-                    "description": event.event_type or "Evento",
+                    "id": f"event-budget-payment:{payment.id}",
+                    "title": title,
+                    "description": description,
                     "currency_id": payment.currency,
                     "quantity": 1,
                     "unit_price": float(payment.amount),
@@ -282,6 +291,42 @@ class MercadoPagoClient:
         )
         response = self.sdk.preference().create(payload, request_options)
         return self._unwrap_response(response, "No pudimos crear la preferencia de pago.")
+
+    def create_ticket_preference(self, purchase):
+        event = purchase.graduation_event.event
+        payload = {
+            "items": [
+                {
+                    "id": f"ticket-purchase:{purchase.id}",
+                    "title": f"Tarjetas {event.name}",
+                    "description": str(purchase.graduate),
+                    "currency_id": Account.Currency.ARS,
+                    "quantity": 1,
+                    "unit_price": float(purchase.total_amount),
+                }
+            ],
+            "external_reference": f"ticket-purchase:{purchase.id}",
+            "metadata": {
+                "ticket_purchase_id": str(purchase.id),
+                "graduation_event_id": str(purchase.graduation_event_id),
+                "event_id": str(event.id),
+            },
+            "payer": {"email": purchase.email},
+            "payment_methods": {"installments": 6},
+        }
+        notification_url = self._build_ticket_notification_url()
+        if notification_url:
+            payload["notification_url"] = notification_url
+        back_urls = self._build_ticket_back_urls(purchase)
+        if back_urls:
+            payload["back_urls"] = back_urls
+            payload["auto_return"] = "approved"
+        request_options = RequestOptions(
+            access_token=self.access_token,
+            custom_headers={"x-idempotency-key": purchase.idempotency_key},
+        )
+        response = self.sdk.preference().create(payload, request_options)
+        return self._unwrap_response(response, "No pudimos crear la preferencia de tarjetas.")
 
     def get_payment(self, payment_id):
         response = self.sdk.payment().get(payment_id)
@@ -316,6 +361,22 @@ class MercadoPagoClient:
     def _build_notification_url(self):
         backend_url = _resolve_public_base_url(settings.BACKEND_URL)
         return f"{backend_url}/api/event-budget-payments/webhook/" if backend_url else None
+
+    def _build_ticket_notification_url(self):
+        backend_url = _resolve_public_base_url(settings.BACKEND_URL)
+        return f"{backend_url}/api/ticket-purchases/webhook/" if backend_url else None
+
+    def _build_ticket_back_urls(self, purchase):
+        frontend_url = _resolve_public_base_url(settings.FRONTEND_URL)
+        if not frontend_url:
+            return {}
+        query = urlencode({"purchase": purchase.id})
+        token = purchase.graduation_event.public_token
+        return {
+            "success": f"{frontend_url}/egresados/{token}/?payment_status=approved&{query}",
+            "failure": f"{frontend_url}/egresados/{token}/?payment_status=failure&{query}",
+            "pending": f"{frontend_url}/egresados/{token}/?payment_status=pending&{query}",
+        }
 
     def _unwrap_response(self, response, fallback_message):
         if not isinstance(response, dict):
@@ -357,22 +418,37 @@ def _extract_mp_error(body, fallback_message):
     return fallback_message
 
 
+def _budget_payment_amount(budget, budget_item=None):
+    if budget_item:
+        if budget_item.budget_id != budget.id:
+            raise ValidationError("El item no pertenece al presupuesto.")
+        return budget_item.total
+    return budget.total()
+
+
 @transaction.atomic
-def create_event_budget_payment_preference(budget):
+def create_event_budget_payment_preference(budget, budget_item=None):
     if not isinstance(budget, EventBudget):
         budget = EventBudget.objects.select_for_update().select_related("event", "event__client").get(pk=budget)
     else:
         budget = EventBudget.objects.select_for_update().select_related("event", "event__client").get(pk=budget.pk)
-    amount = budget.total()
+    if budget_item and not isinstance(budget_item, EventBudgetItem):
+        budget_item = EventBudgetItem.objects.select_related("budget").get(pk=budget_item)
+    amount = _budget_payment_amount(budget, budget_item)
     if amount <= 0:
         raise ValidationError("El presupuesto no tiene importe para cobrar.")
     reusable = (
         budget.payments.select_for_update()
-        .filter(amount=amount, currency=Account.Currency.ARS, status__in=[EventBudgetPayment.Status.PENDING, EventBudgetPayment.Status.IN_PROCESS])
+        .filter(
+            amount=amount,
+            budget_item=budget_item,
+            currency=Account.Currency.ARS,
+            status__in=[EventBudgetPayment.Status.PENDING, EventBudgetPayment.Status.IN_PROCESS],
+        )
         .exclude(mp_preference_id="")
         .first()
     )
-    payment = reusable or EventBudgetPayment.objects.create(budget=budget, amount=amount, currency=Account.Currency.ARS)
+    payment = reusable or EventBudgetPayment.objects.create(budget=budget, budget_item=budget_item, amount=amount, currency=Account.Currency.ARS)
     if not payment.mp_preference_id:
         preference = MercadoPagoClient().create_budget_preference(payment)
         preference_id = str(preference.get("id") or "")
@@ -389,6 +465,43 @@ def create_event_budget_payment_preference(budget):
                 "updated_at",
             ]
         )
+    return payment
+
+
+@transaction.atomic
+def register_event_budget_item_manual_payment(budget_item, account, amount=None, payment_date=None, payment_method="Manual", description="", user=None):
+    if not isinstance(budget_item, EventBudgetItem):
+        budget_item = EventBudgetItem.objects.select_related("budget", "budget__event").get(pk=budget_item)
+    if not isinstance(account, Account):
+        account = Account.objects.get(pk=account)
+    payment_date = payment_date or timezone.localdate()
+    ensure_account_day_is_open(account, payment_date)
+    amount = Decimal(str(amount or budget_item.total))
+    payment = EventBudgetPayment.objects.create(
+        budget=budget_item.budget,
+        budget_item=budget_item,
+        status=EventBudgetPayment.Status.APPROVED,
+        amount=amount,
+        currency=account.currency,
+        payment_method=payment_method,
+    )
+    code = get_code("COBRO_EVENTO")
+    movement = CashMovement.objects.create(
+        date_payment=payment_date,
+        description=description or f"Cobro item - {budget_item.service_name}",
+        movement_type=CashMovement.MovementType.INCOME,
+        amount=amount,
+        account=account,
+        code=code,
+        event=budget_item.budget.event,
+        payment_method=payment_method,
+        status=CashMovement.Status.CONFIRMED,
+        notes=f"Item presupuesto #{budget_item.id}",
+        created_by=user,
+        updated_by=user,
+    )
+    payment.cash_movement = movement
+    payment.save(update_fields=["cash_movement", "updated_at"])
     return payment
 
 
@@ -481,7 +594,7 @@ def ensure_event_budget_payment_cash_movement(payment, payment_data=None):
     )
     movement = CashMovement.objects.create(
         date_payment=_payment_accounting_date(payment_data),
-        description=f"Cobro Mercado Pago - {payment.budget.event.name}",
+        description=f"Cobro Mercado Pago - {payment.budget_item.service_name if payment.budget_item_id else payment.budget.event.name}",
         voucher_number=payment.mp_payment_id,
         movement_type=CashMovement.MovementType.INCOME,
         amount=payment.amount,
@@ -490,7 +603,7 @@ def ensure_event_budget_payment_cash_movement(payment, payment_data=None):
         event=payment.budget.event,
         payment_method="Mercado Pago",
         status=CashMovement.Status.CONFIRMED,
-        notes=f"Preferencia {payment.mp_preference_id}",
+        notes=f"Preferencia {payment.mp_preference_id}" + (f" - Item presupuesto #{payment.budget_item_id}" if payment.budget_item_id else ""),
     )
     payment.cash_movement = movement
     payment.save(update_fields=["cash_movement", "updated_at"])
@@ -524,6 +637,176 @@ def ensure_event_budget_payment_reversal(payment, payment_data=None):
         payment_method="Mercado Pago",
         status=CashMovement.Status.CONFIRMED,
         notes=f"Reversa de movimiento #{original.id}",
+    )
+
+
+def _validate_capacity(graduation_event, quantity):
+    if graduation_event.capacity is None:
+        return
+    if graduation_event.paid_ticket_count() + int(quantity) > graduation_event.capacity:
+        raise ValidationError("No hay cupo suficiente para esa cantidad de tarjetas.")
+
+
+@transaction.atomic
+def create_ticket_purchase_preference(graduation_event, graduate, quantity, email):
+    if not isinstance(graduation_event, GraduationEvent):
+        graduation_event = GraduationEvent.objects.select_for_update().select_related("event").get(pk=graduation_event)
+    if not isinstance(graduate, Graduate):
+        graduate = Graduate.objects.get(pk=graduate)
+    if graduate.graduation_event_id != graduation_event.id:
+        raise ValidationError("El egresado no pertenece a este evento.")
+    if not graduation_event.active:
+        raise ValidationError("La venta de tarjetas no esta activa.")
+    try:
+        quantity = int(quantity)
+    except (TypeError, ValueError):
+        raise ValidationError("La cantidad debe ser mayor a cero.")
+    if quantity < 1:
+        raise ValidationError("La cantidad debe ser mayor a cero.")
+    if not str(email or "").strip():
+        raise ValidationError("El email es obligatorio.")
+    _validate_capacity(graduation_event, quantity)
+    purchase = TicketPurchase.objects.create(
+        graduation_event=graduation_event,
+        graduate=graduate,
+        quantity=quantity,
+        email=email,
+    )
+    _send_ticket_purchase_summary(purchase)
+    preference = MercadoPagoClient().create_ticket_preference(purchase)
+    preference_id = str(preference.get("id") or "")
+    if not preference_id:
+        raise MercadoPagoAPIError("Mercado Pago no devolvio una preferencia valida.")
+    purchase.mp_preference_id = preference_id
+    purchase.preference_init_point = str(preference.get("init_point") or "")
+    purchase.preference_sandbox_init_point = str(preference.get("sandbox_init_point") or "")
+    purchase.save(update_fields=["mp_preference_id", "preference_init_point", "preference_sandbox_init_point", "updated_at"])
+    return purchase
+
+
+def _send_ticket_purchase_summary(purchase):
+    event = purchase.graduation_event.event
+    send_mail(
+        subject=f"Resumen de compra - {event.name}",
+        message=(
+            f"Egresado: {purchase.graduate}\n"
+            f"Cantidad de tarjetas: {purchase.quantity}\n"
+            f"Importe total: ${purchase.total_amount}\n"
+            "El pago se completa en Mercado Pago."
+        ),
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[purchase.email],
+    )
+
+
+TICKET_STATUS_MAP = {
+    "approved": TicketPurchase.Status.PAID,
+    "in_process": TicketPurchase.Status.IN_PROCESS,
+    "pending": TicketPurchase.Status.PENDING,
+    "authorized": TicketPurchase.Status.PENDING,
+    "rejected": TicketPurchase.Status.CANCELLED,
+    "cancelled": TicketPurchase.Status.CANCELLED,
+    "refunded": TicketPurchase.Status.REFUNDED,
+    "charged_back": TicketPurchase.Status.REFUNDED,
+}
+
+
+@transaction.atomic
+def sync_ticket_purchase_payment(purchase_id, payment_data):
+    purchase = TicketPurchase.objects.select_for_update().select_related("graduation_event", "graduation_event__event", "graduate", "cash_movement").get(pk=purchase_id)
+    _validate_approved_ticket_purchase(purchase, payment_data)
+    raw_status = str(payment_data.get("status") or "pending").lower()
+    purchase.status = TICKET_STATUS_MAP.get(raw_status, TicketPurchase.Status.PENDING)
+    purchase.mp_payment_id = str(payment_data.get("id") or purchase.mp_payment_id)
+    purchase.status_detail = str(payment_data.get("status_detail") or "")
+    purchase.payment_method = str(payment_data.get("payment_method_id") or "")
+    purchase.payment_type = str(payment_data.get("payment_type_id") or "")
+    purchase.save(update_fields=["status", "mp_payment_id", "status_detail", "payment_method", "payment_type", "updated_at"])
+    if purchase.status == TicketPurchase.Status.PAID:
+        ensure_ticket_purchase_cash_movement(purchase, payment_data)
+    elif raw_status in {"refunded", "charged_back"}:
+        ensure_ticket_purchase_reversal(purchase, payment_data)
+    return purchase
+
+
+def _validate_approved_ticket_purchase(purchase, payment_data):
+    if str(payment_data.get("status") or "").lower() != "approved":
+        return
+    errors = []
+    expected_reference = f"ticket-purchase:{purchase.id}"
+    metadata = payment_data.get("metadata") or {}
+    if str(payment_data.get("external_reference") or "") != expected_reference and str(metadata.get("ticket_purchase_id") or "") != str(purchase.id):
+        errors.append("external_reference")
+    try:
+        remote_amount = Decimal(str(payment_data.get("transaction_amount") or "-1"))
+    except (InvalidOperation, TypeError):
+        remote_amount = Decimal("-1")
+    if remote_amount != purchase.total_amount:
+        errors.append("transaction_amount")
+    if str(payment_data.get("currency_id") or "").upper() != Account.Currency.ARS:
+        errors.append("currency_id")
+    if errors:
+        raise PaymentIntegrityError("El pago aprobado no coincide con la compra: " + ", ".join(errors))
+
+
+def ensure_ticket_purchase_cash_movement(purchase, payment_data=None):
+    if purchase.cash_movement_id:
+        return purchase.cash_movement
+    payment_data = payment_data or {}
+    account_name = str(settings.MERCADOPAGO_ACCOUNT_NAME or "MERCADO PAGO").strip() or "MERCADO PAGO"
+    account, _ = Account.objects.get_or_create(
+        name=account_name,
+        defaults={"type": Account.AccountType.WALLET, "currency": Account.Currency.ARS, "initial_balance": Decimal("0.00")},
+    )
+    code, _ = MovementCode.objects.get_or_create(
+        code="COBRO_EVENTO",
+        defaults={"name": "Cobro de evento", "movement_type": MovementCode.MovementKind.INCOME, "category": "Eventos", "requires_event": True, "active": True},
+    )
+    movement = CashMovement.objects.create(
+        date_payment=_payment_accounting_date(payment_data),
+        description=f"Venta tarjetas egresados - {purchase.graduate}",
+        voucher_number=purchase.mp_payment_id,
+        movement_type=CashMovement.MovementType.INCOME,
+        amount=purchase.total_amount,
+        account=account,
+        code=code,
+        event=purchase.graduation_event.event,
+        payment_method="Mercado Pago",
+        status=CashMovement.Status.CONFIRMED,
+        notes=f"Compra tarjetas #{purchase.id}",
+    )
+    purchase.cash_movement = movement
+    purchase.save(update_fields=["cash_movement", "updated_at"])
+    return movement
+
+
+def ensure_ticket_purchase_reversal(purchase, payment_data=None):
+    if not purchase.cash_movement_id:
+        return None
+    original = purchase.cash_movement
+    voucher_number = f"{purchase.mp_payment_id or original.voucher_number}-ticket-reversal"
+    existing = CashMovement.objects.filter(
+        account=original.account,
+        event=purchase.graduation_event.event,
+        voucher_number=voucher_number,
+        movement_type=CashMovement.MovementType.EXPENSE,
+        amount=purchase.total_amount,
+    ).first()
+    if existing:
+        return existing
+    code = MovementCode.objects.filter(code="AJUSTE_CAJA").first() or original.code
+    return CashMovement.objects.create(
+        date_payment=_payment_accounting_date(payment_data or {}),
+        description=f"Reversa tarjetas egresados - {purchase.graduate}",
+        voucher_number=voucher_number,
+        movement_type=CashMovement.MovementType.EXPENSE,
+        amount=purchase.total_amount,
+        account=original.account,
+        code=code,
+        event=purchase.graduation_event.event,
+        payment_method="Mercado Pago",
+        status=CashMovement.Status.CONFIRMED,
+        notes=f"Reversa de compra tarjetas #{purchase.id}",
     )
 
 
@@ -680,6 +963,53 @@ def get_event_overview(event):
         },
         "budget_summary": budget_summary,
     }
+
+
+def _pdf_escape(value):
+    return str(value).replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def build_cash_movement_receipt_pdf(movement):
+    if not isinstance(movement, CashMovement):
+        movement = CashMovement.objects.select_related("account", "code", "provider", "employee", "event").get(pk=movement)
+    if movement.status != CashMovement.Status.CONFIRMED:
+        raise ValidationError("Solo se generan comprobantes para movimientos confirmados.")
+    title = "Recibo" if movement.movement_type in (CashMovement.MovementType.INCOME, CashMovement.MovementType.TRANSFER_IN, CashMovement.MovementType.ADJUSTMENT) else "Comprobante de pago"
+    related = movement.event or movement.provider or movement.employee or ""
+    lines = [
+        title,
+        f"Nro: CM-{movement.id:06d}",
+        f"Fecha: {movement.date_payment}",
+        f"Cuenta: {movement.account.name}",
+        f"Codigo: {movement.code.code} - {movement.code.name}",
+        f"Concepto: {movement.description}",
+        f"Importe: {movement.account.currency} {movement.amount}",
+        f"Medio de pago: {movement.payment_method or '-'}",
+        f"Relacionado: {related or '-'}",
+        f"Comprobante externo: {movement.voucher_number or '-'}",
+    ]
+    if movement.notes:
+        lines.append(f"Notas: {movement.notes}")
+    text = "BT /F1 12 Tf 72 760 Td 18 TL " + " ".join(f"({_pdf_escape(line)}) Tj T*" for line in lines) + " ET"
+    stream = text.encode("latin-1", errors="replace")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
+    ]
+    pdf = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for index, obj in enumerate(objects, start=1):
+        offsets.append(len(pdf))
+        pdf.extend(f"{index} 0 obj\n".encode("ascii") + obj + b"\nendobj\n")
+    xref = len(pdf)
+    pdf.extend(f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode("ascii"))
+    for offset in offsets[1:]:
+        pdf.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    pdf.extend(f"trailer << /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode("ascii"))
+    return bytes(pdf)
 
 
 @transaction.atomic

@@ -15,11 +15,14 @@ from .models import (
     EventBudgetItem,
     EventBudgetPayment,
     EventStaffAssignment,
+    Graduate,
+    GraduationEvent,
     MovementCode,
     Provider,
     ProviderLedgerEntry,
     Reminder,
     TaxPayment,
+    TicketPurchase,
     TaxType,
 )
 from .services import calculate_account_balance
@@ -110,6 +113,7 @@ class EventBudgetItemSerializer(serializers.ModelSerializer):
 class EventBudgetPaymentSerializer(serializers.ModelSerializer):
     event_id = serializers.IntegerField(source="budget.event_id", read_only=True)
     event_name = serializers.CharField(source="budget.event.name", read_only=True)
+    budget_item_name = serializers.CharField(source="budget_item.service_name", read_only=True)
     cash_movement_account = serializers.CharField(source="cash_movement.account.name", read_only=True)
     cash_movement_date = serializers.DateField(source="cash_movement.date_payment", read_only=True)
 
@@ -186,6 +190,60 @@ class EventStaffAssignmentSerializer(serializers.ModelSerializer):
 
     def get_employee_name(self, obj):
         return str(obj.employee)
+
+
+class GraduationEventSerializer(serializers.ModelSerializer):
+    event_name = serializers.CharField(source="event.name", read_only=True)
+    event_date = serializers.DateField(source="event.event_date", read_only=True)
+    public_url_token = serializers.CharField(source="public_token", read_only=True)
+    paid_ticket_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = GraduationEvent
+        fields = "__all__"
+        read_only_fields = ["public_token"]
+
+    def get_paid_ticket_count(self, obj):
+        return obj.paid_ticket_count()
+
+
+class GraduateSerializer(serializers.ModelSerializer):
+    display_name = serializers.SerializerMethodField()
+    event_name = serializers.CharField(source="graduation_event.event.name", read_only=True)
+
+    class Meta:
+        model = Graduate
+        fields = "__all__"
+
+    def get_display_name(self, obj):
+        return str(obj)
+
+
+class TicketPurchaseSerializer(serializers.ModelSerializer):
+    graduate_name = serializers.SerializerMethodField()
+    event_name = serializers.CharField(source="graduation_event.event.name", read_only=True)
+    cash_movement_account = serializers.CharField(source="cash_movement.account.name", read_only=True)
+    cash_movement_date = serializers.DateField(source="cash_movement.date_payment", read_only=True)
+
+    class Meta:
+        model = TicketPurchase
+        fields = "__all__"
+        read_only_fields = [
+            "total_amount",
+            "idempotency_key",
+            "mp_preference_id",
+            "preference_init_point",
+            "preference_sandbox_init_point",
+            "mp_payment_id",
+            "status",
+            "status_detail",
+            "payment_method",
+            "payment_type",
+            "cash_movement",
+        ]
+
+    def get_graduate_name(self, obj):
+        return str(obj.graduate)
 
 
 class TaxTypeSerializer(serializers.ModelSerializer):

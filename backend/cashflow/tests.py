@@ -3,6 +3,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core import mail
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.test import TestCase, override_settings
@@ -19,10 +20,13 @@ from .models import (
     EventBudgetItem,
     EventBudgetPayment,
     EventStaffAssignment,
+    Graduate,
+    GraduationEvent,
     MovementCode,
     Provider,
     ProviderLedgerEntry,
     Reminder,
+    TicketPurchase,
     TaxType,
 )
 from .services import (
@@ -32,11 +36,15 @@ from .services import (
     create_account_transfer,
     create_balance_adjustment,
     create_event_budget_payment_preference,
+    build_cash_movement_receipt_pdf,
+    create_ticket_purchase_preference,
     get_event_overview,
+    register_event_budget_item_manual_payment,
     register_employee_payment,
     register_provider_payment,
     register_tax_payment,
     sync_event_budget_payment,
+    sync_ticket_purchase_payment,
     void_cash_movement,
 )
 
@@ -368,6 +376,43 @@ class EventBudgetPaymentStageThreeTests(TestCase):
         self.assertEqual(response.data["preference_id"], "pref_123")
         self.assertEqual(EventBudgetPayment.objects.count(), 1)
 
+    @patch("cashflow.services.MercadoPagoClient")
+    def test_budget_item_manual_and_mp_payments_create_cash_movement(self, mercado_pago_client):
+        item = self.budget.items.get(service_name="Servicio integral")
+        manual = register_event_budget_item_manual_payment(item, Account.objects.get(name="EFECTIVO"), payment_date=date(2026, 6, 12))
+        self.assertEqual(manual.budget_item, item)
+        self.assertEqual(manual.cash_movement.amount, Decimal("2000.00"))
+        self.assertEqual(manual.cash_movement.code.code, "COBRO_EVENTO")
+
+        mercado_pago_client.return_value.create_budget_preference.return_value = {
+            "id": "pref_item",
+            "init_point": "https://www.mercadopago.com.ar/checkout/v1/redirect?pref_id=pref_item",
+            "sandbox_init_point": "https://sandbox.mercadopago.com.ar/checkout/v1/redirect?pref_id=pref_item",
+        }
+        response = self.client_api.post(
+            "/api/event-budget-payments/create-preference/",
+            {"budget": self.budget.id, "budget_item": item.id},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["budget_item"], item.id)
+
+    def test_cash_movement_receipt_endpoint_returns_pdf(self):
+        movement = CashMovement.objects.create(
+            date_payment=date(2026, 6, 12),
+            description="Cobro evento",
+            movement_type=CashMovement.MovementType.INCOME,
+            amount=Decimal("500.00"),
+            account=Account.objects.get(name="EFECTIVO"),
+            code=MovementCode.objects.get(code="COBRO_EVENTO"),
+            event=self.event,
+            status=CashMovement.Status.CONFIRMED,
+        )
+        self.assertTrue(build_cash_movement_receipt_pdf(movement).startswith(b"%PDF"))
+        response = self.client_api.get(f"/api/cash-movements/{movement.id}/receipt/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+
     def test_sync_approved_payment_approves_budget(self):
         payment = EventBudgetPayment.objects.create(
             budget=self.budget,
@@ -442,3 +487,50 @@ class EventBudgetPaymentStageThreeTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 403)
+
+
+class GraduationTicketTests(TestCase):
+    def setUp(self):
+        call_command("seed_initial_data", verbosity=0)
+        self.client_api = APIClient()
+        self.event = Event.objects.get(name="Evento ejemplo")
+        self.graduation_event = GraduationEvent.objects.create(event=self.event, price_per_ticket=Decimal("1500.00"), capacity=100)
+        self.graduate = Graduate.objects.create(graduation_event=self.graduation_event, first_name="Ana", last_name="Lopez")
+
+    @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+    @patch("cashflow.services.MercadoPagoClient")
+    def test_public_ticket_purchase_summary_checkout_and_payment_sync(self, mercado_pago_client):
+        mercado_pago_client.return_value.create_ticket_preference.return_value = {
+            "id": "pref_ticket",
+            "init_point": "https://www.mercadopago.com.ar/checkout/v1/redirect?pref_id=pref_ticket",
+            "sandbox_init_point": "https://sandbox.mercadopago.com.ar/checkout/v1/redirect?pref_id=pref_ticket",
+        }
+        public_response = self.client_api.get(f"/api/graduation-events/{self.graduation_event.public_token}/public/")
+        self.assertEqual(public_response.status_code, 200)
+        search_response = self.client_api.get(f"/api/graduation-events/{self.graduation_event.public_token}/graduates/search/?search=ana")
+        self.assertEqual(search_response.status_code, 200)
+        self.assertEqual(search_response.data[0]["display_name"], "Ana Lopez")
+
+        purchase = create_ticket_purchase_preference(self.graduation_event, self.graduate, 2, "ana@example.com")
+        self.assertEqual(purchase.total_amount, Decimal("3000.00"))
+        self.assertEqual(purchase.mp_preference_id, "pref_ticket")
+        self.assertEqual(len(mail.outbox), 1)
+
+        approved_payload = {
+            "id": "ticket_pay_123",
+            "status": "approved",
+            "external_reference": f"ticket-purchase:{purchase.id}",
+            "transaction_amount": "3000.00",
+            "currency_id": "ARS",
+            "date_approved": "2026-06-12T10:20:30.000-03:00",
+        }
+        sync_ticket_purchase_payment(purchase.id, approved_payload)
+        purchase.refresh_from_db()
+        self.assertEqual(purchase.status, TicketPurchase.Status.PAID)
+        self.assertIsNotNone(purchase.cash_movement)
+        self.assertEqual(purchase.cash_movement.amount, Decimal("3000.00"))
+
+        refund_payload = {"id": "ticket_pay_123", "status": "refunded", "date_approved": "2026-06-13T09:00:00.000-03:00"}
+        sync_ticket_purchase_payment(purchase.id, refund_payload)
+        sync_ticket_purchase_payment(purchase.id, refund_payload)
+        self.assertEqual(CashMovement.objects.filter(voucher_number="ticket_pay_123-ticket-reversal").count(), 1)

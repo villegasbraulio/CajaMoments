@@ -12,6 +12,7 @@ const navItems = [
   ["providers", "Proveedores"],
   ["people", "Personal eventual"],
   ["events", "Eventos basicos"],
+  ["graduation", "Egresados"],
   ["taxes", "Impuestos y recordatorios"],
   ["reports", "Reportes"],
 ];
@@ -117,6 +118,7 @@ function statusLabel(type) {
     cancelled: "Cancelado",
     refunded: "Reembolsado",
     in_process: "En proceso",
+    paid: "Pagado",
   };
   return labels[type] || type;
 }
@@ -160,11 +162,21 @@ function TextAreaInput({ label, value, onChange, rows = 3, placeholder = "" }) {
 }
 
 function SelectInput({ label, value, onChange, options, labelFor, required = false, empty = "Seleccionar" }) {
+  const [query, setQuery] = useState("");
+  const filteredOptions = options.filter((option) => labelFor(option).toLowerCase().includes(query.toLowerCase())).slice(0, 80);
   return (
     <Field label={label}>
+      {options.length > 8 && (
+        <input
+          className="form-control form-control-sm mb-1"
+          value={query}
+          placeholder="Buscar..."
+          onChange={(event) => setQuery(event.target.value)}
+        />
+      )}
       <select className="form-select" value={value || ""} required={required} onChange={(event) => onChange(event.target.value)}>
         <option value="">{empty}</option>
-        {options.map((option) => (
+        {filteredOptions.map((option) => (
           <option key={option.id} value={option.id}>
             {labelFor(option)}
           </option>
@@ -257,6 +269,8 @@ function emptyEventForm() {
     protocol_notes: "",
     beverage_notes: "",
     additional_notes: "",
+    schedule_notes: "",
+    function_notes: "",
     operational_notes: "",
     internal_status: "",
     contact_name: "",
@@ -283,6 +297,8 @@ function normalizeEventForForm(event) {
     protocol_notes: event.protocol_notes || "",
     beverage_notes: event.beverage_notes || "",
     additional_notes: event.additional_notes || "",
+    schedule_notes: event.schedule_notes || "",
+    function_notes: event.function_notes || "",
     operational_notes: event.operational_notes || "",
     internal_status: event.internal_status || "",
     contact_name: event.contact_name || "",
@@ -332,6 +348,9 @@ function App() {
     events: [],
     eventBudgetPayments: [],
     assignments: [],
+    graduationEvents: [],
+    graduates: [],
+    ticketPurchases: [],
     taxTypes: [],
   });
   const [reloadKey, setReloadKey] = useState(0);
@@ -359,7 +378,7 @@ function App() {
   }
 
   async function loadRefs() {
-    const [accounts, movementCodes, providers, employees, roles, clients, events, eventBudgetPayments, assignments, taxTypes] = await Promise.all([
+    const [accounts, movementCodes, providers, employees, roles, clients, events, eventBudgetPayments, assignments, graduationEvents, graduates, ticketPurchases, taxTypes] = await Promise.all([
       apiList("/accounts/"),
       apiList("/movement-codes/"),
       apiList("/providers/"),
@@ -369,6 +388,9 @@ function App() {
       apiList("/events/"),
       apiList("/event-budget-payments/"),
       apiList("/event-staff-assignments/"),
+      apiList("/graduation-events/"),
+      apiList("/graduates/"),
+      apiList("/ticket-purchases/"),
       apiList("/tax-types/"),
     ]);
     setRefs({
@@ -381,6 +403,9 @@ function App() {
       events,
       eventBudgetPayments,
       assignments,
+      graduationEvents,
+      graduates,
+      ticketPurchases,
       taxTypes,
     });
   }
@@ -401,6 +426,9 @@ function App() {
         events: [],
         eventBudgetPayments: [],
         assignments: [],
+        graduationEvents: [],
+        graduates: [],
+        ticketPurchases: [],
         taxTypes: [],
       });
       return;
@@ -444,6 +472,7 @@ function App() {
     providers: <ProvidersScreen {...context} />,
     people: <PeopleScreen {...context} />,
     events: <EventsScreen {...context} />,
+    graduation: <GraduationScreen {...context} />,
     taxes: <TaxesScreen {...context} />,
     reports: <ReportsScreen refs={refs} />,
   };
@@ -482,6 +511,11 @@ function App() {
       },
       "Sesion cerrada",
     );
+  }
+
+  const publicGraduationMatch = window.location.pathname.match(/^\/egresados\/([^/]+)\/?/);
+  if (publicGraduationMatch) {
+    return <PublicGraduationPage token={publicGraduationMatch[1]} />;
   }
 
   if (booting) {
@@ -751,6 +785,8 @@ function DailyCash({ refs, mutate, reloadKey }) {
     employee: "",
   });
   const [movements, setMovements] = useState([]);
+  const [selectedMovement, setSelectedMovement] = useState(null);
+  const [editingMovement, setEditingMovement] = useState(null);
 
   const selectedCode = refs.movementCodes.find((code) => String(code.id) === String(form.code));
   const selectedAccount = refs.accounts.find((account) => String(account.id) === String(form.account));
@@ -816,6 +852,39 @@ function DailyCash({ refs, mutate, reloadKey }) {
       "Movimiento anulado",
     );
     loadMovements();
+  }
+
+  function openMovement(row) {
+    setSelectedMovement(row);
+    setEditingMovement({
+      date_payment: row.date_payment || todayISO(),
+      account: row.account || "",
+      code: row.code || "",
+      movement_type: row.movement_type || "INCOME",
+      amount: row.amount || "",
+      description: row.description || "",
+      voucher_number: row.voucher_number || "",
+      provider: row.provider || "",
+      employee: row.employee || "",
+      event: row.event || "",
+      payment_method: row.payment_method || "",
+      notes: row.notes || "",
+      status: row.status || "CONFIRMED",
+    });
+  }
+
+  async function downloadReceipt(row) {
+    const response = await fetch(`${API_BASE}/cash-movements/${row.id}/receipt/`, {
+      headers: { Authorization: `Token ${localStorage.getItem(TOKEN_STORAGE_KEY) || ""}` },
+    });
+    if (!response.ok) throw new Error("No se pudo descargar el comprobante.");
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `cash-movement-${row.id}.pdf`;
+    link.click();
+    URL.revokeObjectURL(url);
   }
 
   return (
@@ -920,8 +989,40 @@ function DailyCash({ refs, mutate, reloadKey }) {
                   ) : (
                     "-"
                   ), ""],
+                [(row) => <button className="btn btn-sm btn-outline-dark" onClick={() => openMovement(row)}>Detalle</button>, ""],
               ]}
             />
+            {selectedMovement && editingMovement && (
+              <form
+                className="border rounded-4 p-3 mt-3"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  mutate(
+                    () => api(`/cash-movements/${selectedMovement.id}/`, { method: "PUT", body: JSON.stringify(editingMovement) }),
+                    "Movimiento actualizado",
+                  ).then(loadMovements);
+                }}
+              >
+                <div className="d-flex justify-content-between align-items-center mb-2">
+                  <h4 className="section-title mb-0">Detalle movimiento #{selectedMovement.id}</h4>
+                  <button className="btn btn-sm btn-outline-dark" type="button" onClick={() => mutate(() => downloadReceipt(selectedMovement), "Comprobante descargado")}>PDF</button>
+                </div>
+                <div className="row g-2">
+                  <div className="col-md-3"><TextInput label="Fecha" type="date" value={editingMovement.date_payment} onChange={(v) => setEditingMovement({ ...editingMovement, date_payment: v })} /></div>
+                  <div className="col-md-3"><TextInput label="Importe" type="number" value={editingMovement.amount} onChange={(v) => setEditingMovement({ ...editingMovement, amount: v })} /></div>
+                  <div className="col-md-3"><SelectInput label="Cuenta" value={editingMovement.account} onChange={(v) => setEditingMovement({ ...editingMovement, account: v })} options={refs.accounts} labelFor={(a) => a.name} /></div>
+                  <div className="col-md-3"><SelectInput label="Codigo" value={editingMovement.code} onChange={(v) => setEditingMovement({ ...editingMovement, code: v })} options={refs.movementCodes} labelFor={(c) => c.code} /></div>
+                  <div className="col-md-6"><TextInput label="Descripcion" value={editingMovement.description} onChange={(v) => setEditingMovement({ ...editingMovement, description: v })} /></div>
+                  <div className="col-md-3"><TextInput label="Comprobante" value={editingMovement.voucher_number} onChange={(v) => setEditingMovement({ ...editingMovement, voucher_number: v })} /></div>
+                  <div className="col-md-3"><TextInput label="Metodo" value={editingMovement.payment_method} onChange={(v) => setEditingMovement({ ...editingMovement, payment_method: v })} /></div>
+                  <div className="col-md-4"><SelectInput label="Proveedor" value={editingMovement.provider} onChange={(v) => setEditingMovement({ ...editingMovement, provider: v || null })} options={refs.providers} labelFor={(p) => p.name} empty="Sin proveedor" /></div>
+                  <div className="col-md-4"><SelectInput label="Empleado" value={editingMovement.employee} onChange={(v) => setEditingMovement({ ...editingMovement, employee: v || null })} options={refs.employees} labelFor={(e) => e.display_name || `${e.first_name} ${e.last_name}`} empty="Sin empleado" /></div>
+                  <div className="col-md-4"><SelectInput label="Evento" value={editingMovement.event} onChange={(v) => setEditingMovement({ ...editingMovement, event: v || null })} options={refs.events} labelFor={(e) => e.name} empty="Sin evento" /></div>
+                  <div className="col-12"><TextAreaInput label="Notas" value={editingMovement.notes} onChange={(v) => setEditingMovement({ ...editingMovement, notes: v })} rows={2} /></div>
+                </div>
+                <button className="btn btn-earth btn-sm mt-2">Guardar cambios</button>
+              </form>
+            )}
           </div>
         </div>
       </div>
@@ -1170,6 +1271,7 @@ function ClosesScreen({ refs, mutate, reloadKey }) {
 function ProvidersScreen({ refs, mutate, reloadKey }) {
   const [providerForm, setProviderForm] = useState({ name: "", category: "", phone: "", email: "", cuit: "" });
   const [selectedProvider, setSelectedProvider] = useState("");
+  const [editingProvider, setEditingProvider] = useState(null);
   const [ledger, setLedger] = useState([]);
   const [debt, setDebt] = useState({ date: todayISO(), description: "", document_number: "", amount: "", event: "" });
   const [payment, setPayment] = useState({ date: todayISO(), account: "", amount: "", description: "", event: "", document_number: "" });
@@ -1179,6 +1281,9 @@ function ProvidersScreen({ refs, mutate, reloadKey }) {
   }, [selectedProvider, reloadKey]);
 
   const selected = refs.providers.find((provider) => String(provider.id) === String(selectedProvider));
+  useEffect(() => {
+    setEditingProvider(selected ? { ...selected } : null);
+  }, [selectedProvider, refs.providers]);
   const ledgerWithRunningBalance = [...ledger]
     .sort((left, right) => `${left.date}-${left.id}`.localeCompare(`${right.date}-${right.id}`))
     .reduce((accumulator, entry) => {
@@ -1212,6 +1317,22 @@ function ProvidersScreen({ refs, mutate, reloadKey }) {
           <div className="work-card mt-3">
             <SelectInput label="Proveedor" value={selectedProvider} onChange={setSelectedProvider} options={refs.providers} labelFor={(p) => `${p.name} (${money(p.balance)})`} />
             {selected && <div className="metric-card mt-2"><span className="text-muted small">Saldo</span><strong className="d-block">{money(selected.balance)}</strong></div>}
+            {editingProvider && (
+              <form
+                className="mt-3"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  mutate(() => api(`/providers/${selectedProvider}/`, { method: "PUT", body: JSON.stringify(editingProvider) }), "Proveedor actualizado");
+                }}
+              >
+                <TextInput label="Nombre" value={editingProvider.name || ""} onChange={(v) => setEditingProvider({ ...editingProvider, name: v })} />
+                <TextInput label="Categoria" value={editingProvider.category || ""} onChange={(v) => setEditingProvider({ ...editingProvider, category: v })} />
+                <TextInput label="Telefono" value={editingProvider.phone || ""} onChange={(v) => setEditingProvider({ ...editingProvider, phone: v })} />
+                <TextInput label="Email" value={editingProvider.email || ""} onChange={(v) => setEditingProvider({ ...editingProvider, email: v })} />
+                <TextInput label="CUIT" value={editingProvider.cuit || ""} onChange={(v) => setEditingProvider({ ...editingProvider, cuit: v })} />
+                <button className="btn btn-outline-dark btn-sm">Guardar proveedor</button>
+              </form>
+            )}
           </div>
         </div>
         <div className="col-lg-8">
@@ -1290,9 +1411,17 @@ function ProvidersScreen({ refs, mutate, reloadKey }) {
 
 function PeopleScreen({ refs, mutate }) {
   const [employee, setEmployee] = useState({ first_name: "", last_name: "", alias: "", phone: "", document_number: "" });
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState("");
+  const [editingEmployee, setEditingEmployee] = useState(null);
   const [roleName, setRoleName] = useState("");
   const [assignment, setAssignment] = useState({ event: "", employee: "", role: "", work_date: todayISO(), base_amount: "", extra_amount: "0.00", status: "WORKED" });
   const [payment, setPayment] = useState({ employee: "", assignment: "", account: "", amount: "", payment_date: todayISO(), notes: "" });
+  const selectedEmployee = refs.employees.find((row) => String(row.id) === String(selectedEmployeeId));
+  const selectedAssignments = refs.assignments.filter((row) => String(row.employee) === String(selectedEmployeeId));
+
+  useEffect(() => {
+    setEditingEmployee(selectedEmployee ? { ...selectedEmployee } : null);
+  }, [selectedEmployeeId, refs.employees]);
 
   return (
     <>
@@ -1365,8 +1494,37 @@ function PeopleScreen({ refs, mutate }) {
               ["phone", "Telefono"],
               ["document_number", "Documento"],
               [(row) => (row.active ? "Activo" : "Inactivo"), "Estado"],
+              [(row) => <button className="btn btn-sm btn-outline-dark" onClick={() => setSelectedEmployeeId(String(row.id))}>Ficha</button>, ""],
             ]} />
           </div>
+          {editingEmployee && (
+            <form
+              className="work-card mt-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                mutate(() => api(`/employees/${selectedEmployeeId}/`, { method: "PUT", body: JSON.stringify(editingEmployee) }), "Empleado actualizado");
+              }}
+            >
+              <h4 className="section-title">Ficha de {selectedEmployee?.display_name}</h4>
+              <div className="row g-2">
+                <div className="col-md-6"><TextInput label="Nombre" value={editingEmployee.first_name || ""} onChange={(v) => setEditingEmployee({ ...editingEmployee, first_name: v })} /></div>
+                <div className="col-md-6"><TextInput label="Apellido" value={editingEmployee.last_name || ""} onChange={(v) => setEditingEmployee({ ...editingEmployee, last_name: v })} /></div>
+                <div className="col-md-4"><TextInput label="Alias" value={editingEmployee.alias || ""} onChange={(v) => setEditingEmployee({ ...editingEmployee, alias: v })} /></div>
+                <div className="col-md-4"><TextInput label="Telefono" value={editingEmployee.phone || ""} onChange={(v) => setEditingEmployee({ ...editingEmployee, phone: v })} /></div>
+                <div className="col-md-4"><TextInput label="Documento" value={editingEmployee.document_number || ""} onChange={(v) => setEditingEmployee({ ...editingEmployee, document_number: v })} /></div>
+                <div className="col-12"><TextAreaInput label="Notas" value={editingEmployee.notes || ""} onChange={(v) => setEditingEmployee({ ...editingEmployee, notes: v })} rows={2} /></div>
+              </div>
+              <button className="btn btn-outline-dark btn-sm mt-2">Guardar empleado</button>
+              <h4 className="section-title mt-3">Asignaciones</h4>
+              <SimpleTable rows={selectedAssignments} columns={[
+                ["event_name", "Evento"],
+                ["role_name", "Rol"],
+                ["work_date", "Fecha"],
+                [(row) => money(row.total_amount), "Total"],
+                [(row) => statusLabel(row.status), "Estado"],
+              ]} />
+            </form>
+          )}
           <div className="work-card mt-3">
             <h4 className="section-title">Asignaciones</h4>
             <SimpleTable rows={refs.assignments} columns={[
@@ -1523,6 +1681,8 @@ function EventsScreen({ refs, mutate, reloadKey }) {
               <div className="col-md-6"><TextInput label="Personas brindis" type="number" value={newEvent.guest_count_toast} onChange={(v) => setNewEvent({ ...newEvent, guest_count_toast: v })} /></div>
             </div>
             <TextInput label="Mesa principal" value={newEvent.main_table_notes} onChange={(v) => setNewEvent({ ...newEvent, main_table_notes: v })} />
+            <TextAreaInput label="Cronograma" value={newEvent.schedule_notes} onChange={(v) => setNewEvent({ ...newEvent, schedule_notes: v })} rows={2} />
+            <TextAreaInput label="Funciones" value={newEvent.function_notes} onChange={(v) => setNewEvent({ ...newEvent, function_notes: v })} rows={2} />
             <button className="btn btn-earth w-100 mt-2">Crear evento</button>
           </form>
 
@@ -1646,6 +1806,8 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                     <div className="col-md-6"><TextAreaInput label="Protocolo y ceremonia" value={editingEvent.protocol_notes} onChange={(v) => setEditingEvent({ ...editingEvent, protocol_notes: v })} rows={2} /></div>
                     <div className="col-md-6"><TextAreaInput label="Bebidas / barra" value={editingEvent.beverage_notes} onChange={(v) => setEditingEvent({ ...editingEvent, beverage_notes: v })} rows={2} /></div>
                     <div className="col-md-6"><TextAreaInput label="Adicionales" value={editingEvent.additional_notes} onChange={(v) => setEditingEvent({ ...editingEvent, additional_notes: v })} rows={2} /></div>
+                    <div className="col-md-6"><TextAreaInput label="Cronograma" value={editingEvent.schedule_notes} onChange={(v) => setEditingEvent({ ...editingEvent, schedule_notes: v })} rows={3} /></div>
+                    <div className="col-md-6"><TextAreaInput label="Funciones" value={editingEvent.function_notes} onChange={(v) => setEditingEvent({ ...editingEvent, function_notes: v })} rows={3} /></div>
                     <div className="col-md-6"><TextAreaInput label="Observaciones generales" value={editingEvent.notes} onChange={(v) => setEditingEvent({ ...editingEvent, notes: v })} rows={3} /></div>
                     <div className="col-md-6"><TextAreaInput label="Observaciones operativas" value={editingEvent.operational_notes} onChange={(v) => setEditingEvent({ ...editingEvent, operational_notes: v })} rows={3} /></div>
                   </div>
@@ -1710,6 +1872,50 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                         ["staffingPending", "Pendiente personal"],
                       ]}
                     />
+                  </div>
+                </div>
+              </div>
+
+              <div className="work-card mt-3">
+                <h4 className="section-title">Detalle vinculado</h4>
+                <div className="row g-3">
+                  <div className="col-lg-6">
+                    <h4 className="section-title">Movimientos de caja</h4>
+                    <SimpleTable rows={overview?.movements || []} columns={[
+                      [(row) => formatDate(row.date_payment), "Fecha"],
+                      ["account_name", "Cuenta"],
+                      ["code_code", "Codigo"],
+                      [(row) => money(row.amount), "Importe"],
+                      ["description", "Descripcion"],
+                    ]} />
+                  </div>
+                  <div className="col-lg-6">
+                    <h4 className="section-title">Personal asignado</h4>
+                    <SimpleTable rows={overview?.staff_assignments || []} columns={[
+                      ["employee_name", "Empleado"],
+                      ["role_name", "Rol"],
+                      [(row) => formatDate(row.work_date), "Fecha"],
+                      [(row) => money(row.total_amount), "Total"],
+                      [(row) => statusLabel(row.status), "Estado"],
+                    ]} />
+                  </div>
+                  <div className="col-lg-6">
+                    <h4 className="section-title">Proveedores</h4>
+                    <SimpleTable rows={overview?.provider_entries || []} columns={[
+                      ["provider_name", "Proveedor"],
+                      [(row) => formatDate(row.date), "Fecha"],
+                      [(row) => statusLabel(row.entry_type), "Tipo"],
+                      [(row) => money(row.amount), "Importe"],
+                    ]} />
+                  </div>
+                  <div className="col-lg-6">
+                    <h4 className="section-title">Pagos al personal</h4>
+                    <SimpleTable rows={overview?.employee_payments || []} columns={[
+                      ["employee_name", "Empleado"],
+                      [(row) => formatDate(row.payment_date), "Fecha"],
+                      [(row) => money(row.amount), "Importe"],
+                      ["notes", "Notas"],
+                    ]} />
                   </div>
                 </div>
               </div>
@@ -2018,6 +2224,37 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                                 </div>
                               </div>
                               <div className="d-flex gap-2 justify-content-end mt-2">
+                                <button
+                                  className="btn btn-sm btn-earth"
+                                  type="button"
+                                  onClick={() => {
+                                    if (!budget?.id) return;
+                                    mutate(async () => {
+                                      const preference = await api("/event-budget-payments/create-preference/", {
+                                        method: "POST",
+                                        body: JSON.stringify({ budget: budget.id, budget_item: item.id }),
+                                      });
+                                      const url = preference.init_point || preference.sandbox_init_point;
+                                      if (url) window.open(url, "_blank", "noreferrer");
+                                    }, "Checkout del item preparado");
+                                  }}
+                                >
+                                  MP item
+                                </button>
+                                <button
+                                  className="btn btn-sm btn-outline-dark"
+                                  type="button"
+                                  onClick={() => {
+                                    const account = window.prompt("ID de cuenta para registrar el cobro manual:");
+                                    if (!account) return;
+                                    mutate(
+                                      () => api(`/event-budget-items/${item.id}/pay-manual/`, { method: "POST", body: JSON.stringify({ account }) }),
+                                      "Cobro del item registrado",
+                                    );
+                                  }}
+                                >
+                                  Cobro manual
+                                </button>
                                 <button className="btn btn-sm btn-outline-dark" type="submit">Guardar item</button>
                                 <button
                                   className="btn btn-sm btn-outline-danger"
@@ -2048,6 +2285,160 @@ function EventsScreen({ refs, mutate, reloadKey }) {
         </div>
       </div>
     </>
+  );
+}
+
+function GraduationScreen({ refs, mutate }) {
+  const [form, setForm] = useState({ event: "", price_per_ticket: "", capacity: "", active: true, notes: "" });
+  const [graduate, setGraduate] = useState({ graduation_event: "", first_name: "", last_name: "", notes: "" });
+  const [selected, setSelected] = useState("");
+  const selectedEvent = refs.graduationEvents.find((row) => String(row.id) === String(selected));
+  const graduates = refs.graduates.filter((row) => String(row.graduation_event) === String(selected));
+  const purchases = refs.ticketPurchases.filter((row) => String(row.graduation_event) === String(selected));
+  const publicLink = selectedEvent ? `${window.location.origin}/egresados/${selectedEvent.public_token || selectedEvent.public_url_token}/` : "";
+
+  return (
+    <>
+      <PageHeader title="Egresados" kicker="Venta de tarjetas">
+        Gestiona el link publico, la lista de egresados y las compras pagadas por Mercado Pago.
+      </PageHeader>
+      <div className="row g-3">
+        <div className="col-lg-4">
+          <form
+            className="work-card"
+            onSubmit={(event) => {
+              event.preventDefault();
+              mutate(
+                () => api("/graduation-events/", { method: "POST", body: JSON.stringify({ ...form, capacity: form.capacity || null }) }),
+                "Evento de egresados creado",
+              );
+            }}
+          >
+            <h4 className="section-title">Nuevo link</h4>
+            <SelectInput label="Evento base" value={form.event} onChange={(v) => setForm({ ...form, event: v })} options={refs.events} labelFor={(e) => e.name} required />
+            <TextInput label="Precio tarjeta" type="number" value={form.price_per_ticket} onChange={(v) => setForm({ ...form, price_per_ticket: v })} required />
+            <TextInput label="Cupo" type="number" value={form.capacity} onChange={(v) => setForm({ ...form, capacity: v })} />
+            <TextAreaInput label="Notas" value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} rows={2} />
+            <button className="btn btn-earth w-100 mt-2">Crear link</button>
+          </form>
+          <div className="work-card mt-3">
+            <SelectInput label="Evento egresados" value={selected} onChange={(v) => {
+              setSelected(v);
+              setGraduate({ ...graduate, graduation_event: v });
+            }} options={refs.graduationEvents} labelFor={(e) => `${e.event_name} - ${money(e.price_per_ticket)}`} />
+            {publicLink && (
+              <div className="mt-2">
+                <TextInput label="Link publico" value={publicLink} onChange={() => {}} />
+                <button className="btn btn-sm btn-outline-dark" onClick={() => navigator.clipboard?.writeText(publicLink)}>Copiar link</button>
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="col-lg-8">
+          {selectedEvent ? (
+            <div className="row g-3">
+              <div className="col-md-5">
+                <form
+                  className="work-card"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    mutate(() => api("/graduates/", { method: "POST", body: JSON.stringify({ ...graduate, graduation_event: selected }) }), "Egresado agregado");
+                  }}
+                >
+                  <h4 className="section-title">Agregar egresado</h4>
+                  <TextInput label="Nombre" value={graduate.first_name} onChange={(v) => setGraduate({ ...graduate, first_name: v })} required />
+                  <TextInput label="Apellido" value={graduate.last_name} onChange={(v) => setGraduate({ ...graduate, last_name: v })} required />
+                  <TextAreaInput label="Notas" value={graduate.notes} onChange={(v) => setGraduate({ ...graduate, notes: v })} rows={2} />
+                  <button className="btn btn-olive w-100 mt-2">Agregar</button>
+                </form>
+              </div>
+              <div className="col-md-7">
+                <div className="work-card h-100">
+                  <h4 className="section-title">Egresados</h4>
+                  <SimpleTable rows={graduates} columns={[
+                    ["display_name", "Nombre"],
+                    ["notes", "Notas"],
+                  ]} />
+                </div>
+              </div>
+              <div className="col-12">
+                <div className="work-card">
+                  <h4 className="section-title">Compras</h4>
+                  <SimpleTable rows={purchases} columns={[
+                    ["graduate_name", "Egresado"],
+                    ["email", "Email"],
+                    ["quantity", "Cant."],
+                    [(row) => money(row.total_amount), "Total"],
+                    [(row) => statusLabel(row.status), "Estado"],
+                    ["cash_movement_account", "Cuenta"],
+                  ]} />
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="work-card">Elegí o creá un evento de egresados.</div>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+function PublicGraduationPage({ token }) {
+  const [eventData, setEventData] = useState(null);
+  const [graduates, setGraduates] = useState([]);
+  const [query, setQuery] = useState("");
+  const [form, setForm] = useState({ graduate: "", quantity: "1", email: "" });
+  const [status, setStatus] = useState(null);
+
+  useEffect(() => {
+    api(`/graduation-events/${token}/public/`, { token: "" }).then(setEventData).catch((error) => setStatus({ type: "error", message: prettifyErrorMessage(error.message) }));
+  }, [token]);
+
+  useEffect(() => {
+    if (!query.trim()) {
+      setGraduates([]);
+      return;
+    }
+    api(`/graduation-events/${token}/graduates/search/?search=${encodeURIComponent(query)}`, { token: "" })
+      .then((data) => setGraduates(unwrap(data)))
+      .catch((error) => setStatus({ type: "error", message: prettifyErrorMessage(error.message) }));
+  }, [query, token]);
+
+  async function submit(event) {
+    event.preventDefault();
+    try {
+      const purchase = await api("/ticket-purchases/create-preference/", {
+        method: "POST",
+        body: JSON.stringify({ token, ...form }),
+        token: "",
+      });
+      setStatus({ type: "success", message: "Resumen enviado. Abriendo Mercado Pago..." });
+      const url = purchase.init_point || purchase.sandbox_init_point;
+      if (url) window.location.href = url;
+    } catch (error) {
+      setStatus({ type: "error", message: prettifyErrorMessage(error.message) });
+    }
+  }
+
+  return (
+    <div className="app-shell">
+      <main className="main-stage">
+        <section className="hero-card">
+          <div className="pill mb-3">Caja Moments</div>
+          <h2 className="mb-2">{eventData?.event_name || "Egresados"}</h2>
+          <p className="text-muted">{eventData ? `Tarjeta: ${money(eventData.price_per_ticket)}` : "Cargando evento..."}</p>
+          <AlertLine status={status} />
+          <form className="work-card" onSubmit={submit}>
+            <TextInput label="Buscar egresado" value={query} onChange={setQuery} placeholder="Escribí tu nombre" />
+            <SelectInput label="Egresado" value={form.graduate} onChange={(v) => setForm({ ...form, graduate: v })} options={graduates} labelFor={(g) => g.display_name} required />
+            <TextInput label="Cantidad de tarjetas" type="number" value={form.quantity} onChange={(v) => setForm({ ...form, quantity: v })} required />
+            <TextInput label="Email" type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} required />
+            <button className="btn btn-earth w-100 mt-2">Continuar a Mercado Pago</button>
+          </form>
+        </section>
+      </main>
+    </div>
   );
 }
 
