@@ -36,14 +36,17 @@ from .services import (
     calculate_account_balance,
     close_daily_account,
     close_daily_cash_group,
+    close_event,
     create_account_transfer,
     create_balance_adjustment,
+    create_event_with_client_and_amount,
     create_event_budget_payment_preference,
     build_cash_movement_receipt_pdf,
     create_ticket_purchase_preference,
     close_graduation_event,
     export_daily_account_close_csv,
     get_event_overview,
+    register_event_payment,
     register_event_budget_item_manual_payment,
     register_employee_payment,
     register_provider_payment,
@@ -366,6 +369,119 @@ class EventBudgetStageTwoTests(TestCase):
         self.assertEqual(Decimal(str(overview_response.data["budget_summary"]["grand_total"])), Decimal("78500.00"))
 
 
+class Event360Tests(TestCase):
+    def setUp(self):
+        call_command("seed_initial_data", verbosity=0)
+        self.client_api = APIClient()
+        self.user = get_user_model().objects.create_user(username="event360", password="secret123", is_staff=True)
+        login_response = self.client_api.post("/api/auth/login/", {"username": "event360", "password": "secret123"}, format="json")
+        self.client_api.credentials(HTTP_AUTHORIZATION=f"Token {login_response.data['token']}")
+        self.cash = Account.objects.get(name="EFECTIVO")
+
+    def test_create_event_with_client_and_amount_creates_base_budget_item(self):
+        event = create_event_with_client_and_amount(
+            {"name": "Casamiento Diaz", "event_type": "Boda", "status": Event.Status.DRAFT},
+            {"name": "Familia Diaz", "phone": "123", "email": "familia@example.com"},
+            amount=Decimal("150000.00"),
+            user=self.user,
+        )
+        self.assertEqual(event.client.name, "Familia Diaz")
+        self.assertEqual(event.budget.subtotal(), Decimal("150000.00"))
+        self.assertEqual(event.budget.items.get(service_name="Evento").total, Decimal("150000.00"))
+
+        response = self.client_api.post(
+            "/api/events/create-with-client/",
+            {
+                "client_name": "Escuela Norte",
+                "name": "Cena egresados",
+                "event_type": "Egresados",
+                "event_date": "2026-09-20",
+                "status": "DRAFT",
+                "amount": "250000.00",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        created = Event.objects.get(pk=response.data["id"])
+        self.assertEqual(created.client.name, "Escuela Norte")
+        self.assertEqual(created.budget.total(), Decimal("250000.00"))
+
+    def test_register_deposit_updates_balance_and_event_status(self):
+        event = create_event_with_client_and_amount(
+            {"name": "Cumple Mora", "event_type": "Cumple", "status": Event.Status.DRAFT},
+            {"name": "Mora"},
+            amount=Decimal("100000.00"),
+            user=self.user,
+        )
+        payment = register_event_payment(
+            event,
+            self.cash,
+            Decimal("30000.00"),
+            payment_date=date(2026, 7, 10),
+            payment_method="Efectivo",
+            is_deposit=True,
+            user=self.user,
+        )
+        event.refresh_from_db()
+        overview = get_event_overview(event)
+        self.assertEqual(payment.cash_movement.code.code, "SEÑA_EVENTO")
+        self.assertEqual(event.status, Event.Status.SIGNALED)
+        self.assertEqual(overview["financial"]["event_total"], Decimal("100000.00"))
+        self.assertEqual(overview["financial"]["paid"], Decimal("30000.00"))
+        self.assertEqual(overview["financial"]["pending"], Decimal("70000.00"))
+
+    @patch("cashflow.services.MercadoPagoClient")
+    def test_public_event_payment_context_and_preference(self, mercado_pago_client):
+        mercado_pago_client.return_value.create_budget_preference.return_value = {
+            "id": "pref_public_event",
+            "init_point": "https://www.mercadopago.com.ar/checkout/v1/redirect?pref_id=pref_public_event",
+            "sandbox_init_point": "https://sandbox.mercadopago.com.ar/checkout/v1/redirect?pref_id=pref_public_event",
+        }
+        event = create_event_with_client_and_amount(
+            {"name": "Fiesta Alvarez", "event_type": "Social", "status": Event.Status.DRAFT},
+            {"name": "Alvarez"},
+            amount=Decimal("90000.00"),
+            user=self.user,
+        )
+        optional = EventBudgetItem.objects.create(
+            budget=event.budget,
+            service_name="Barra",
+            quantity=Decimal("1.00"),
+            unit_price=Decimal("15000.00"),
+            is_optional=True,
+            sort_order=2,
+        )
+
+        public_response = self.client_api.get(f"/api/event-payments/{event.public_payment_token}/public/")
+        self.assertEqual(public_response.status_code, 200)
+        self.assertEqual(Decimal(str(public_response.data["budget_summary"]["grand_total"])), Decimal("105000.00"))
+        self.assertEqual(len(public_response.data["items"]), 2)
+
+        preference_response = self.client_api.post(
+            f"/api/event-payments/{event.public_payment_token}/create-preference/",
+            {"budget_item": optional.id},
+            format="json",
+        )
+        self.assertEqual(preference_response.status_code, 201)
+        self.assertEqual(preference_response.data["preference_id"], "pref_public_event")
+        self.assertEqual(Decimal(str(preference_response.data["amount"])), Decimal("15000.00"))
+
+    def test_close_event_freezes_final_numbers(self):
+        event = create_event_with_client_and_amount(
+            {"name": "Evento cierre", "event_type": "Corporativo", "status": Event.Status.CONFIRMED},
+            {"name": "Empresa"},
+            amount=Decimal("120000.00"),
+            user=self.user,
+        )
+        register_event_payment(event, self.cash, Decimal("50000.00"), payment_date=date(2026, 7, 10), user=self.user)
+        closed = close_event(event, self.user)
+        self.assertEqual(closed.status, Event.Status.CLOSED)
+        self.assertIsNotNone(closed.closed_at)
+        self.assertEqual(closed.closed_total_amount, Decimal("120000.00"))
+        self.assertEqual(closed.closed_paid_amount, Decimal("50000.00"))
+        self.assertEqual(closed.closed_pending_amount, Decimal("70000.00"))
+
+
 class EventBudgetPaymentStageThreeTests(TestCase):
     def setUp(self):
         call_command("seed_initial_data", verbosity=0)
@@ -561,8 +677,15 @@ class GraduationTicketTests(TestCase):
     def test_ticket_price_limit_manual_payment_close_and_audit(self):
         user = get_user_model().objects.create_user(username="ticket-admin", password="secret123", is_staff=True)
         cash = Account.objects.get(name="EFECTIVO")
-        GraduationTicketPrice.objects.create(graduation_event=self.graduation_event, price=Decimal("2000.00"), valid_from=date(2026, 7, 1))
-        self.assertEqual(self.graduation_event.current_ticket_price(date(2026, 7, 10)), Decimal("2000.00"))
+        GraduationTicketPrice.objects.create(
+            graduation_event=self.graduation_event,
+            price=Decimal("1800.00"),
+            valid_from=date(2026, 7, 1),
+            valid_until=date(2026, 7, 31),
+        )
+        GraduationTicketPrice.objects.create(graduation_event=self.graduation_event, price=Decimal("2000.00"), valid_from=date(2026, 8, 1))
+        self.assertEqual(self.graduation_event.current_ticket_price(date(2026, 7, 10)), Decimal("1800.00"))
+        self.assertEqual(self.graduation_event.current_ticket_price(date(2026, 8, 10)), Decimal("2000.00"))
 
         purchase = register_ticket_purchase_manual(
             self.graduation_event,
@@ -574,8 +697,8 @@ class GraduationTicketTests(TestCase):
             payment_method="Efectivo",
             user=user,
         )
-        self.assertEqual(purchase.total_amount, Decimal("4000.00"))
-        self.assertEqual(purchase.cash_movement.amount, Decimal("4000.00"))
+        self.assertEqual(purchase.total_amount, Decimal("3600.00"))
+        self.assertEqual(purchase.cash_movement.amount, Decimal("3600.00"))
         self.assertEqual(purchase.created_by, user)
         self.assertTrue(AuditLogEntry.objects.filter(user=user, action="ticket_purchase_manual").exists())
 

@@ -175,9 +175,11 @@ class Client(TimestampedModel):
 
 class Event(TimestampedModel):
     class Status(models.TextChoices):
-        DRAFT = "DRAFT", "Borrador"
+        DRAFT = "DRAFT", "Presupuesto"
+        SIGNALED = "SIGNALED", "Señado"
         CONFIRMED = "CONFIRMED", "Confirmado"
         DONE = "DONE", "Realizado"
+        CLOSED = "CLOSED", "Cerrado"
         CANCELLED = "CANCELLED", "Cancelado"
 
     client = models.ForeignKey(Client, null=True, blank=True, on_delete=models.SET_NULL, related_name="events")
@@ -202,6 +204,40 @@ class Event(TimestampedModel):
     contact_phone = models.CharField(max_length=80, blank=True)
     contact_email = models.EmailField(blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
+    public_payment_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    closed_at = models.DateTimeField(null=True, blank=True)
+    closed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="closed_events",
+    )
+    closed_total_amount = models.DecimalField(
+        max_digits=MONEY_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+        default=Decimal("0.00"),
+    )
+    closed_paid_amount = models.DecimalField(
+        max_digits=MONEY_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+        default=Decimal("0.00"),
+    )
+    closed_pending_amount = models.DecimalField(
+        max_digits=MONEY_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+        default=Decimal("0.00"),
+    )
+    closed_expense_amount = models.DecimalField(
+        max_digits=MONEY_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+        default=Decimal("0.00"),
+    )
+    closed_result_amount = models.DecimalField(
+        max_digits=MONEY_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+        default=Decimal("0.00"),
+    )
     notes = models.TextField(blank=True)
 
     class Meta:
@@ -365,7 +401,9 @@ class GraduationEvent(TimestampedModel):
 
     def current_ticket_price(self, on_date=None):
         on_date = on_date or timezone.localdate()
-        price = self.ticket_prices.filter(valid_from__lte=on_date).order_by("-valid_from", "-id").first()
+        price = self.ticket_prices.filter(valid_from__lte=on_date).filter(
+            models.Q(valid_until__isnull=True) | models.Q(valid_until__gte=on_date)
+        ).order_by("-valid_from", "-id").first()
         return price.price if price else self.price_per_ticket
 
 
@@ -377,6 +415,7 @@ class GraduationTicketPrice(TimestampedModel):
         validators=[MinValueValidator(MONEY_MIN)],
     )
     valid_from = models.DateField()
+    valid_until = models.DateField(null=True, blank=True)
     notes = models.TextField(blank=True)
 
     class Meta:
@@ -385,6 +424,10 @@ class GraduationTicketPrice(TimestampedModel):
 
     def __str__(self):
         return f"{self.graduation_event} - {self.valid_from} - {self.price}"
+
+    def clean(self):
+        if self.valid_until and self.valid_until < self.valid_from:
+            raise ValidationError("La vigencia hasta no puede ser anterior a la vigencia desde.")
 
 
 class Graduate(TimestampedModel):

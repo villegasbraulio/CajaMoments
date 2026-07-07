@@ -192,9 +192,9 @@ class GraduationEventAdmin(AuditReadonlyMixin, admin.ModelAdmin):
 
 @admin.register(GraduationTicketPrice)
 class GraduationTicketPriceAdmin(AuditReadonlyMixin, admin.ModelAdmin):
-    list_display = ("graduation_event", "valid_from", "price")
+    list_display = ("graduation_event", "valid_from", "valid_until", "price")
     search_fields = ("graduation_event__event__name", "notes")
-    list_filter = ("valid_from",)
+    list_filter = ("valid_from", "valid_until")
 
 
 @admin.register(Graduate)

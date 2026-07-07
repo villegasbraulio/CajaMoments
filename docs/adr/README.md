@@ -33,6 +33,9 @@ A decision based only on an unconfirmed `AGENT_ASSUMPTION` cannot be `accepted`.
 | [ADR-0007](0007-graduation-ticket-sales.md) | Graduation ticket sales | superseded | USER_INSTRUCTION, REPOSITORY_EVIDENCE | 2026-07-07 | ADR-0008 |
 | [ADR-0008](0008-graduation-ticket-pricing-limits-and-close.md) | Graduation ticket pricing, limits, and close | accepted | USER_INSTRUCTION, REPOSITORY_EVIDENCE | 2026-07-07 | — |
 | [ADR-0009](0009-central-audit-log.md) | Central audit log | accepted | USER_INSTRUCTION, REPOSITORY_EVIDENCE | 2026-07-07 | — |
+| [ADR-0010](0010-event-360-and-client-payment-links.md) | Event 360 and client payment links | accepted | USER_INSTRUCTION, REPOSITORY_EVIDENCE | 2026-07-07 | — |
+| [ADR-0011](0011-graduation-ticket-price-validity-ranges.md) | Graduation ticket price validity ranges | accepted | USER_INSTRUCTION, REPOSITORY_EVIDENCE | 2026-07-07 | — |
+| [ADR-0012](0012-material-ui-backoffice-shell.md) | Material UI backoffice shell | accepted | USER_INSTRUCTION, REPOSITORY_EVIDENCE | 2026-07-07 | — |
 
 ## Creating an ADR
 

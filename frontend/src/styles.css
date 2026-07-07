@@ -1,24 +1,19 @@
 :root {
   --ink: #17211b;
-  --muted: #6c756d;
-  --paper: #fffaf0;
-  --cream: #f5ecd7;
-  --line: rgba(23, 33, 27, 0.12);
-  --olive: #51624f;
-  --terra: #b65d3b;
-  --gold: #d7a84f;
-  --mint: #dce8d7;
+  --muted: #66706a;
+  --paper: #ffffff;
+  --line: rgba(23, 33, 27, 0.1);
+  --teal: #245c63;
+  --copper: #9b5d2e;
+  --soft: #f4f6f5;
 }
 
 body {
   min-height: 100vh;
   margin: 0;
   color: var(--ink);
-  background:
-    radial-gradient(circle at top left, rgba(215, 168, 79, 0.34), transparent 32rem),
-    radial-gradient(circle at 85% 18%, rgba(81, 98, 79, 0.24), transparent 28rem),
-    linear-gradient(135deg, #fff8e8 0%, #efe4c9 48%, #dce8d7 100%);
-  font-family: "Avenir Next", "Trebuchet MS", Verdana, sans-serif;
+  background: var(--soft);
+  font-family: "Inter", "Avenir Next", system-ui, sans-serif;
 }
 
 .app-shell {
@@ -28,8 +23,8 @@ body {
 }
 
 .sidebar {
-  background: rgba(23, 33, 27, 0.92);
-  color: #fffaf0;
+  background: #132326;
+  color: #f8fbfa;
   padding: 2rem 1.3rem;
   position: sticky;
   top: 0;
@@ -39,26 +34,25 @@ body {
 }
 
 .brand-mark {
-  border: 1px solid rgba(255, 250, 240, 0.22);
-  border-radius: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 12px;
   padding: 1rem;
-  background: linear-gradient(145deg, rgba(255, 250, 240, 0.13), rgba(255, 250, 240, 0.04));
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .brand-mark h1 {
-  font-family: Georgia, "Times New Roman", serif;
   font-size: 1.8rem;
   margin: 0;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
 }
 
 .nav-button {
   width: 100%;
   border: 0;
-  border-radius: 16px;
+  border-radius: 10px;
   padding: 0.82rem 0.95rem;
   margin-top: 0.4rem;
-  color: rgba(255, 250, 240, 0.78);
+  color: rgba(255, 255, 255, 0.78);
   background: transparent;
   text-align: left;
   transition: all 180ms ease;
@@ -76,28 +70,40 @@ body {
   overflow-x: hidden;
 }
 
+.main-stage > .row > [class*="col-"] {
+  flex: 0 0 100%;
+  max-width: 100%;
+  width: 100%;
+}
+
 .login-shell {
   grid-template-columns: 1fr;
+}
+
+.public-shell {
+  display: block;
+}
+
+.public-shell .main-stage {
+  width: min(100%, 1180px);
+  margin: 0 auto;
 }
 
 .hero-card,
 .work-card {
   border: 1px solid var(--line);
-  border-radius: 28px;
-  background: rgba(255, 250, 240, 0.82);
-  box-shadow: 0 22px 70px rgba(23, 33, 27, 0.11);
-  backdrop-filter: blur(18px);
+  border-radius: 10px;
+  background: var(--paper);
+  box-shadow: 0 12px 34px rgba(23, 33, 27, 0.08);
 }
 
 .hero-card {
-  padding: 1.7rem;
+  padding: 0;
   margin-bottom: 1.2rem;
 }
 
 .hero-card h2 {
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: clamp(2rem, 4vw, 3.6rem);
-  letter-spacing: -0.06em;
+  letter-spacing: 0;
 }
 
 .work-card {
@@ -110,35 +116,35 @@ body {
 
 .metric-card {
   border: 1px solid var(--line);
-  border-radius: 22px;
-  background: linear-gradient(160deg, rgba(255, 250, 240, 0.92), rgba(220, 232, 215, 0.74));
+  border-radius: 10px;
+  background: #ffffff;
   padding: 1rem;
+  box-shadow: 0 8px 24px rgba(23, 33, 27, 0.06);
 }
 
 .metric-card strong {
   font-size: 1.45rem;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
 }
 
 .section-title {
-  font-family: Georgia, "Times New Roman", serif;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .btn-earth {
-  --bs-btn-bg: var(--terra);
-  --bs-btn-border-color: var(--terra);
-  --bs-btn-color: #fffaf0;
-  --bs-btn-hover-bg: #93482d;
-  --bs-btn-hover-border-color: #93482d;
+  --bs-btn-bg: var(--teal);
+  --bs-btn-border-color: var(--teal);
+  --bs-btn-color: #fff;
+  --bs-btn-hover-bg: #18464c;
+  --bs-btn-hover-border-color: #18464c;
 }
 
 .btn-olive {
-  --bs-btn-bg: var(--olive);
-  --bs-btn-border-color: var(--olive);
-  --bs-btn-color: #fffaf0;
-  --bs-btn-hover-bg: #3d4a3b;
-  --bs-btn-hover-border-color: #3d4a3b;
+  --bs-btn-bg: var(--copper);
+  --bs-btn-border-color: var(--copper);
+  --bs-btn-color: #fff;
+  --bs-btn-hover-bg: #754420;
+  --bs-btn-hover-border-color: #754420;
 }
 
 .table {
@@ -146,14 +152,24 @@ body {
 }
 
 .soft-table {
-  border-radius: 18px;
+  border-radius: 10px;
   overflow: hidden;
   border: 1px solid var(--line);
 }
 
+.budget-items-editor > form {
+  display: none;
+}
+
+.MuiDialogContent-root .work-card {
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+}
+
 .form-control,
 .form-select {
-  border-radius: 14px;
+  border-radius: 10px;
   border-color: rgba(23, 33, 27, 0.18);
   background-color: rgba(255, 255, 255, 0.72);
 }
@@ -164,8 +180,8 @@ body {
   gap: 0.3rem;
   border-radius: 999px;
   padding: 0.3rem 0.65rem;
-  background: var(--mint);
-  color: var(--olive);
+  background: rgba(36, 92, 99, 0.1);
+  color: var(--teal);
   font-size: 0.82rem;
   font-weight: 700;
 }
