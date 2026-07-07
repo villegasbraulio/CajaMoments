@@ -30,7 +30,9 @@ A decision based only on an unconfirmed `AGENT_ASSUMPTION` cannot be `accepted`.
 | [ADR-0004](0004-staff-only-operational-mutations.md) | Staff-only operational mutations | accepted | USER_INSTRUCTION, REPOSITORY_EVIDENCE | 2026-06-29 | — |
 | [ADR-0005](0005-reverse-refunded-budget-payments.md) | Reverse refunded budget payments | accepted | USER_INSTRUCTION, REPOSITORY_EVIDENCE, AGENT_ASSUMPTION | 2026-06-29 | — |
 | [ADR-0006](0006-event-cost-and-operational-details.md) | Event cost and operational details | accepted | USER_INSTRUCTION, REPOSITORY_EVIDENCE | 2026-07-07 | — |
-| [ADR-0007](0007-graduation-ticket-sales.md) | Graduation ticket sales | accepted | USER_INSTRUCTION, REPOSITORY_EVIDENCE | 2026-07-07 | — |
+| [ADR-0007](0007-graduation-ticket-sales.md) | Graduation ticket sales | superseded | USER_INSTRUCTION, REPOSITORY_EVIDENCE | 2026-07-07 | ADR-0008 |
+| [ADR-0008](0008-graduation-ticket-pricing-limits-and-close.md) | Graduation ticket pricing, limits, and close | accepted | USER_INSTRUCTION, REPOSITORY_EVIDENCE | 2026-07-07 | — |
+| [ADR-0009](0009-central-audit-log.md) | Central audit log | accepted | USER_INSTRUCTION, REPOSITORY_EVIDENCE | 2026-07-07 | — |
 
 ## Creating an ADR
 

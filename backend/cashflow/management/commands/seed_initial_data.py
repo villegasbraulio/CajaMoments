@@ -11,6 +11,7 @@ from cashflow.models import (
     Event,
     MovementCode,
     Provider,
+    ServiceType,
     TaxType,
 )
 
@@ -29,6 +30,7 @@ class Command(BaseCommand):
         self.seed_accounts()
         self.seed_movement_codes()
         self.seed_tax_types()
+        self.seed_service_types()
         self.seed_employee_roles()
         if not options["skip_examples"]:
             self.seed_examples()
@@ -91,6 +93,10 @@ class Command(BaseCommand):
     def seed_tax_types(self):
         for name in ["Servicios", "Monotributo", "IVA", "Ingresos Brutos", "Autonomos", "Municipal"]:
             TaxType.objects.get_or_create(name=name)
+
+    def seed_service_types(self):
+        for name in ["Luz", "Agua", "Gas", "Internet", "Mantenimiento", "Otro"]:
+            ServiceType.objects.get_or_create(name=name)
 
     def seed_employee_roles(self):
         for name in ["Mozo", "Cocina", "Cabina", "Limpieza anterior", "Limpieza posterior", "Armado", "Produccion", "Barra", "Otro"]:

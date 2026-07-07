@@ -147,6 +147,7 @@ class Employee(TimestampedModel):
     alias = models.CharField(max_length=120, blank=True)
     phone = models.CharField(max_length=80, blank=True)
     document_number = models.CharField(max_length=40, blank=True)
+    email = models.EmailField(blank=True)
     active = models.BooleanField(default=True)
     notes = models.TextField(blank=True)
 
@@ -340,8 +341,17 @@ class GraduationEvent(TimestampedModel):
         validators=[MinValueValidator(MONEY_MIN)],
     )
     capacity = models.PositiveIntegerField(null=True, blank=True)
+    max_tickets_per_graduate = models.PositiveIntegerField(null=True, blank=True)
     public_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     active = models.BooleanField(default=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+    closed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="closed_graduation_events",
+    )
     notes = models.TextField(blank=True)
 
     class Meta:
@@ -352,6 +362,29 @@ class GraduationEvent(TimestampedModel):
 
     def paid_ticket_count(self):
         return self.purchases.filter(status=TicketPurchase.Status.PAID).aggregate(total=Sum("quantity"))["total"] or 0
+
+    def current_ticket_price(self, on_date=None):
+        on_date = on_date or timezone.localdate()
+        price = self.ticket_prices.filter(valid_from__lte=on_date).order_by("-valid_from", "-id").first()
+        return price.price if price else self.price_per_ticket
+
+
+class GraduationTicketPrice(TimestampedModel):
+    graduation_event = models.ForeignKey(GraduationEvent, on_delete=models.CASCADE, related_name="ticket_prices")
+    price = models.DecimalField(
+        max_digits=MONEY_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+        validators=[MinValueValidator(MONEY_MIN)],
+    )
+    valid_from = models.DateField()
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-valid_from", "-id"]
+        unique_together = [("graduation_event", "valid_from")]
+
+    def __str__(self):
+        return f"{self.graduation_event} - {self.valid_from} - {self.price}"
 
 
 class Graduate(TimestampedModel):
@@ -366,6 +399,10 @@ class Graduate(TimestampedModel):
 
     def __str__(self):
         return f"{self.first_name} {self.last_name}".strip()
+
+    def clean(self):
+        if self.graduation_event_id and self.graduation_event.closed_at:
+            raise ValidationError("La lista de egresados ya esta cerrada.")
 
 
 class TicketPurchase(TimestampedModel):
@@ -397,6 +434,14 @@ class TicketPurchase(TimestampedModel):
         on_delete=models.PROTECT,
         related_name="ticket_purchase",
     )
+    payment_date = models.DateField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="ticket_purchases_created",
+    )
 
     class Meta:
         ordering = ["-created_at"]
@@ -414,7 +459,7 @@ class TicketPurchase(TimestampedModel):
         ]
 
     def save(self, *args, **kwargs):
-        self.total_amount = self.graduation_event.price_per_ticket * Decimal(self.quantity or 0)
+        self.total_amount = self.graduation_event.current_ticket_price(self.payment_date) * Decimal(self.quantity or 0)
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -432,6 +477,37 @@ class TicketPurchaseWebhookLog(models.Model):
 
     def __str__(self):
         return f"Ticket {self.topic} - {self.mp_notification_id}"
+
+
+class ServiceType(TimestampedModel):
+    name = models.CharField(max_length=120, unique=True)
+    active = models.BooleanField(default=True)
+    description = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
+class AuditLogEntry(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="audit_entries")
+    action = models.CharField(max_length=80)
+    model_name = models.CharField(max_length=120)
+    object_id = models.CharField(max_length=80, blank=True)
+    detail = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["model_name", "created_at"]),
+            models.Index(fields=["user", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.created_at} {self.action} {self.model_name}#{self.object_id}"
 
 
 class EventBudgetPaymentWebhookLog(models.Model):
@@ -594,6 +670,7 @@ class CashMovement(TimestampedModel):
     )
     account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name="cash_movements")
     code = models.ForeignKey(MovementCode, on_delete=models.PROTECT, related_name="cash_movements")
+    service_type = models.ForeignKey(ServiceType, null=True, blank=True, on_delete=models.PROTECT, related_name="cash_movements")
     provider = models.ForeignKey(Provider, null=True, blank=True, on_delete=models.PROTECT, related_name="cash_movements")
     employee = models.ForeignKey(Employee, null=True, blank=True, on_delete=models.PROTECT, related_name="cash_movements")
     event = models.ForeignKey(Event, null=True, blank=True, on_delete=models.PROTECT, related_name="cash_movements")

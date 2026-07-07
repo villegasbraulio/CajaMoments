@@ -1,10 +1,10 @@
 # ADR-0007 - Graduation ticket sales
 
 - **Date:** 2026-07-07
-- **Status:** accepted
+- **Status:** superseded
 - **Decision source:** USER_INSTRUCTION, REPOSITORY_EVIDENCE
 - **Supersedes:** none
-- **Superseded by:** none
+- **Superseded by:** [ADR-0008](0008-graduation-ticket-pricing-limits-and-close.md)
 - **Affected areas:** `backend/cashflow/models.py`, `backend/cashflow/services.py`, `backend/cashflow/views.py`, `frontend/src/App.jsx`
 
 ## Context

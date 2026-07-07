@@ -2,6 +2,7 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    AuditLogEntryViewSet,
     AccountTransferViewSet,
     AccountViewSet,
     AuthStatusAPIView,
@@ -27,12 +28,16 @@ from .views import (
     GraduationEventGraduateSearchAPIView,
     GraduationEventPublicAPIView,
     GraduationEventViewSet,
+    GraduationTicketPriceViewSet,
     MovementCodeViewSet,
     ProviderLedgerEntryViewSet,
     ProviderViewSet,
     ReminderViewSet,
     ReportsViewSet,
     TaxPaymentViewSet,
+    ServicePaymentAPIView,
+    ServiceTypeViewSet,
+    TicketPurchaseManualAPIView,
     TicketPurchasePreferenceAPIView,
     TicketPurchaseViewSet,
     TicketPurchaseWebhookAPIView,
@@ -59,11 +64,14 @@ router.register("event-budget-payments", EventBudgetPaymentViewSet)
 router.register("event-staff-assignments", EventStaffAssignmentViewSet)
 router.register("employee-payments", EmployeePaymentViewSet)
 router.register("graduation-events", GraduationEventViewSet)
+router.register("graduation-ticket-prices", GraduationTicketPriceViewSet)
 router.register("graduates", GraduateViewSet)
 router.register("ticket-purchases", TicketPurchaseViewSet)
+router.register("service-types", ServiceTypeViewSet)
 router.register("tax-types", TaxTypeViewSet)
 router.register("tax-payments", TaxPaymentViewSet)
 router.register("reminders", ReminderViewSet)
+router.register("audit-log", AuditLogEntryViewSet)
 router.register("reports", ReportsViewSet, basename="reports")
 
 urlpatterns = [
@@ -77,6 +85,8 @@ urlpatterns = [
     path("graduation-events/<uuid:token>/public/", GraduationEventPublicAPIView.as_view(), name="graduation-event-public"),
     path("graduation-events/<uuid:token>/graduates/search/", GraduationEventGraduateSearchAPIView.as_view(), name="graduation-event-graduate-search"),
     path("ticket-purchases/create-preference/", TicketPurchasePreferenceAPIView.as_view(), name="ticket-purchase-preference"),
+    path("ticket-purchases/manual/", TicketPurchaseManualAPIView.as_view(), name="ticket-purchase-manual"),
     path("ticket-purchases/webhook/", TicketPurchaseWebhookAPIView.as_view(), name="ticket-purchase-webhook"),
+    path("service-payments/", ServicePaymentAPIView.as_view(), name="service-payment"),
     path("", include(router.urls)),
 ]

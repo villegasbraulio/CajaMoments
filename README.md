@@ -41,6 +41,8 @@ reportes.
   evento, impuesto y estado.
 - Ver detalle completo, editar movimientos abiertos y descargar recibo o
   comprobante PDF para movimientos confirmados.
+- Exportar el cierre por cuenta con todos los movimientos del dia: ingresos,
+  egresos, ajustes y transferencias.
 - Anular movimientos sin borrarlos fisicamente.
 - Bloquear cambios cuando la cuenta ya esta cerrada para ese dia.
 
@@ -80,6 +82,7 @@ reportes.
 ### Personal eventual
 
 - Crear empleados y roles.
+- Guardar email y alias bancario del empleado.
 - Asignar empleados a eventos con rol, fecha, importe base, extra, total y
   estado.
 - Registrar pagos parciales o totales al personal desde una cuenta.
@@ -130,10 +133,22 @@ reportes.
 
 - Crear un link publico por evento de egresados, con precio por tarjeta y cupo
   opcional.
+- Definir historial mensual de precios y maximo acumulado de tarjetas por
+  egresado.
 - Precargar egresados para que el comprador busque su nombre sin login.
 - Pedir cantidad y email, enviar resumen por email y abrir Checkout Pro.
 - Marcar compras pagadas por webhook Mercado Pago y crear el ingreso en caja.
+- Registrar pagos manuales de tarjetas por staff, generando caja.
+- Cerrar la lista final y exportarla en CSV.
 - Crear una reversa de caja ante refund o chargeback informado por Mercado Pago.
+
+### Pagos y auditoria
+
+- Registrar pagos desde un modulo con pestanas para proveedores, empleados,
+  servicios y egresados.
+- Crear tipos de servicio al vuelo y pagar servicios con descripcion libre.
+- Consultar auditoria central de acciones por usuario, accion, modelo, objeto y
+  fecha.
 
 ### Impuestos y recordatorios
 
@@ -176,7 +191,7 @@ reportes.
 | `Provider` | Proveedor | nombre, categoria, CUIT, telefono, email, direccion, activo, notas |
 | `ProviderLedgerEntry` | Cuenta corriente proveedor | proveedor, evento, fecha, tipo, descripcion, documento, importe, movimiento asociado, notas |
 | `EmployeeRole` | Rol eventual | nombre, activo |
-| `Employee` | Persona eventual | nombre, apellido, alias, telefono, documento, activo, notas |
+| `Employee` | Persona eventual | nombre, apellido, alias bancario, telefono, documento, email, activo, notas |
 | `EmployeePayment` | Pago a empleado | empleado, evento, asignacion, movimiento asociado, importe, fecha, notas |
 | `Client` | Cliente de evento | nombre, telefono, email, notas |
 | `Event` | Ficha operativa del evento | cliente, nombre, tipo, fecha, hora, salon, invitados, contacto, notas de servicio, cronograma, croquis, funciones, estado interno, estado |
@@ -185,10 +200,13 @@ reportes.
 | `EventBudgetPayment` | Intento/cobranza Mercado Pago o cobro manual por item | presupuesto, item opcional, idempotencia, preference/payment ids, estado MP, metodo, cuotas, importe, moneda, movimiento de caja |
 | `EventBudgetPaymentWebhookLog` | Registro de webhook MP | notification id, clave de deduplicacion, topic, payload, procesado, error, fecha |
 | `EventStaffAssignment` | Asignacion de personal a evento | evento, empleado, rol, fecha, base, extra, total, estado, notas |
-| `GraduationEvent` | Venta publica de tarjetas | evento base, precio por tarjeta, cupo, token publico, activo, notas |
+| `GraduationEvent` | Venta publica de tarjetas | evento base, precio inicial, cupo, maximo por egresado, token publico, cierre, activo, notas |
+| `GraduationTicketPrice` | Historial de precios | evento de egresados, precio, vigente desde, notas |
 | `Graduate` | Egresado precargado | evento de egresados, nombre, apellido, notas |
-| `TicketPurchase` | Compra de tarjetas | evento, egresado, cantidad, total, email, estado, IDs MP, movimiento de caja |
+| `TicketPurchase` | Compra de tarjetas | evento, egresado, cantidad, total, email, estado, IDs MP, medio, fecha, usuario staff, movimiento de caja |
 | `TicketPurchaseWebhookLog` | Registro de webhook de tarjetas | notification id, clave de deduplicacion, topic, payload, procesado, error, fecha |
+| `ServiceType` | Catalogo de servicios | nombre, activo, descripcion |
+| `AuditLogEntry` | Auditoria central | usuario, accion, modelo, id de objeto, detalle, fecha |
 | `TaxType` | Tipo de impuesto | nombre, activo, descripcion |
 | `TaxPayment` | Pago de impuesto | tipo, periodo, fecha, importe, cuenta, movimiento asociado, notas |
 | `Reminder` | Recordatorio | titulo, descripcion, vencimiento, aviso previo, recurrencia, estado, impuesto/evento/proveedor asociado |
@@ -205,6 +223,10 @@ reportes.
   duplicado en `Event`.
 - `GraduationEvent` reusa un `Event` existente para que las ventas de tarjetas
   impacten en la misma caja y reportes del evento.
+- El precio vigente de tarjetas sale de `GraduationTicketPrice`: se usa el
+  ultimo `vigente_desde` menor o igual a la fecha.
+- El cierre final de egresados bloquea nuevos egresados y compras/asignaciones.
+- `AuditLogEntry` registra acciones operativas; no guarda diffs completos.
 - `CashMovement` es el registro canonico de dinero real; proveedores, empleados,
   impuestos, transferencias y cobranzas online apuntan a movimientos de caja.
 - `CashMovement` no se borra: se anula con estado `VOIDED` y motivo.
@@ -245,6 +267,7 @@ Endpoints principales:
 /api/daily-cash-closes/
 /api/daily-cash-closes/close-account/
 /api/daily-account-closes/
+/api/daily-account-closes/{id}/export/
 /api/providers/
 /api/providers/{id}/ledger/
 /api/providers/{id}/pay/
@@ -265,17 +288,25 @@ Endpoints principales:
 /api/employee-payments/
 /api/graduation-events/
 /api/graduation-events/{id}/graduates/
+/api/graduation-events/{id}/ticket-price/
+/api/graduation-events/{id}/close/
+/api/graduation-events/{id}/export/
 /api/graduation-events/{token}/public/
 /api/graduation-events/{token}/graduates/search/
+/api/graduation-ticket-prices/
 /api/graduates/
 /api/ticket-purchases/
 /api/ticket-purchases/create-preference/
+/api/ticket-purchases/manual/
 /api/ticket-purchases/webhook/
+/api/service-types/
+/api/service-payments/
 /api/tax-types/
 /api/tax-payments/
 /api/reminders/
 /api/reminders/{id}/complete/
 /api/reports/
+/api/audit-log/
 ```
 
 Reportes:
@@ -461,6 +492,9 @@ ejemplo.
   externa.
 - Las tarjetas de egresados usan link publico, lista cerrada de egresados y el
   mismo patron de Mercado Pago + caja que los presupuestos.
+- Los precios de tarjetas se cargan por mes; no hay cron de actualizacion.
+- La auditoria usa un log central resumido en vez de columnas repetidas en todos
+  los modelos.
 - USD es una cuenta separada y no se convierte a ARS.
 - La logica de negocio vive en `cashflow/services.py`.
 - La API requiere autenticacion por token salvo login, logout y healthcheck.

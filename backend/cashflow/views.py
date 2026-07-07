@@ -18,6 +18,7 @@ from .filters import CashMovementFilter, ProviderLedgerEntryFilter, ReminderFilt
 from .models import (
     Account,
     AccountTransfer,
+    AuditLogEntry,
     CashMovement,
     Client,
     DailyAccountClose,
@@ -33,10 +34,12 @@ from .models import (
     EventStaffAssignment,
     Graduate,
     GraduationEvent,
+    GraduationTicketPrice,
     MovementCode,
     Provider,
     ProviderLedgerEntry,
     Reminder,
+    ServiceType,
     TaxPayment,
     TicketPurchase,
     TicketPurchaseWebhookLog,
@@ -45,6 +48,7 @@ from .models import (
 from .serializers import (
     AccountSerializer,
     AccountTransferSerializer,
+    AuditLogEntrySerializer,
     CashMovementSerializer,
     ClientSerializer,
     DailyAccountCloseSerializer,
@@ -60,10 +64,12 @@ from .serializers import (
     EventStaffAssignmentSerializer,
     GraduateSerializer,
     GraduationEventSerializer,
+    GraduationTicketPriceSerializer,
     MovementCodeSerializer,
     ProviderLedgerEntrySerializer,
     ProviderSerializer,
     ReminderSerializer,
+    ServiceTypeSerializer,
     TaxPaymentSerializer,
     TicketPurchaseSerializer,
     TaxTypeSerializer,
@@ -78,6 +84,7 @@ from .services import (
     create_ticket_purchase_preference,
     build_cash_movement_receipt_pdf,
     build_mp_webhook_deduplication_key,
+    audit_log,
     get_dashboard_summary,
     get_or_create_event_budget,
     get_event_overview,
@@ -88,7 +95,13 @@ from .services import (
     register_event_budget_item_manual_payment,
     register_employee_payment,
     register_provider_payment,
+    register_service_payment,
     register_tax_payment,
+    register_ticket_purchase_manual,
+    close_graduation_event,
+    create_graduation_ticket_price,
+    export_daily_account_close_csv,
+    export_graduation_event_csv,
     sync_event_budget_payment,
     sync_ticket_purchase_payment,
     void_cash_movement,
@@ -124,7 +137,21 @@ class ReadOnlyOrStaff(BasePermission):
         return bool(request.user and request.user.is_authenticated and request.user.is_staff)
 
 
-class AccountViewSet(viewsets.ModelViewSet):
+class AuditedModelViewSet(viewsets.ModelViewSet):
+    def perform_create(self, serializer):
+        obj = serializer.save()
+        audit_log(request_user_or_none(self.request), "create", obj)
+
+    def perform_update(self, serializer):
+        obj = serializer.save()
+        audit_log(request_user_or_none(self.request), "update", obj)
+
+    def perform_destroy(self, instance):
+        audit_log(request_user_or_none(self.request), "delete", instance)
+        super().perform_destroy(instance)
+
+
+class AccountViewSet(AuditedModelViewSet):
     permission_classes = [ReadOnlyOrStaff]
     queryset = Account.objects.all()
     serializer_class = AccountSerializer
@@ -154,7 +181,7 @@ class AccountViewSet(viewsets.ModelViewSet):
         return Response(CashMovementSerializer(movement).data, status=status.HTTP_201_CREATED)
 
 
-class MovementCodeViewSet(viewsets.ModelViewSet):
+class MovementCodeViewSet(AuditedModelViewSet):
     permission_classes = [ReadOnlyOrStaff]
     queryset = MovementCode.objects.all()
     serializer_class = MovementCodeSerializer
@@ -162,7 +189,7 @@ class MovementCodeViewSet(viewsets.ModelViewSet):
     ordering_fields = ["code", "name", "category"]
 
 
-class CashMovementViewSet(viewsets.ModelViewSet):
+class CashMovementViewSet(AuditedModelViewSet):
     permission_classes = [ReadOnlyOrStaff]
     queryset = CashMovement.objects.select_related(
         "account",
@@ -179,10 +206,12 @@ class CashMovementViewSet(viewsets.ModelViewSet):
     ordering_fields = ["date_payment", "amount", "created_at"]
 
     def perform_create(self, serializer):
-        serializer.save(created_by=request_user_or_none(self.request), updated_by=request_user_or_none(self.request))
+        obj = serializer.save(created_by=request_user_or_none(self.request), updated_by=request_user_or_none(self.request))
+        audit_log(request_user_or_none(self.request), "cash_movement_create", obj)
 
     def perform_update(self, serializer):
-        serializer.save(updated_by=request_user_or_none(self.request))
+        obj = serializer.save(updated_by=request_user_or_none(self.request))
+        audit_log(request_user_or_none(self.request), "cash_movement_update", obj)
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
@@ -194,6 +223,7 @@ class CashMovementViewSet(viewsets.ModelViewSet):
             )
         except ValidationError as exc:
             return validation_error_response(exc)
+        audit_log(request_user_or_none(request), "cash_movement_void", movement, request.data.get("reason", ""))
         return Response(CashMovementSerializer(movement).data)
 
     @action(detail=True, methods=["get"])
@@ -207,7 +237,7 @@ class CashMovementViewSet(viewsets.ModelViewSet):
         return response
 
 
-class AccountTransferViewSet(viewsets.ModelViewSet):
+class AccountTransferViewSet(AuditedModelViewSet):
     permission_classes = [ReadOnlyOrStaff]
     queryset = AccountTransfer.objects.select_related("from_account", "to_account")
     serializer_class = AccountTransferSerializer
@@ -227,10 +257,11 @@ class AccountTransferViewSet(viewsets.ModelViewSet):
             )
         except ValidationError as exc:
             return validation_error_response(exc)
+        audit_log(request_user_or_none(request), "account_transfer_create", transfer)
         return Response(self.get_serializer(transfer).data, status=status.HTTP_201_CREATED)
 
 
-class DailyCashCloseGroupViewSet(viewsets.ModelViewSet):
+class DailyCashCloseGroupViewSet(AuditedModelViewSet):
     permission_classes = [ReadOnlyOrStaff]
     queryset = DailyCashCloseGroup.objects.prefetch_related("account_closes__account")
     serializer_class = DailyCashCloseGroupSerializer
@@ -243,6 +274,7 @@ class DailyCashCloseGroupViewSet(viewsets.ModelViewSet):
                 close_date=parse_date(request.data.get("date"), timezone.localdate()),
                 declared_balances=request.data.get("declared_balances", {}),
                 notes=request.data.get("notes", ""),
+                user=request_user_or_none(request),
             )
         except ValidationError as exc:
             return validation_error_response(exc)
@@ -257,6 +289,7 @@ class DailyCashCloseGroupViewSet(viewsets.ModelViewSet):
                 close_date=parse_date(request.data.get("date"), timezone.localdate()),
                 declared_balance=request.data.get("declared_balance"),
                 notes=request.data.get("notes", ""),
+                user=request_user_or_none(request),
             )
         except ValidationError as exc:
             return validation_error_response(exc)
@@ -269,8 +302,15 @@ class DailyAccountCloseViewSet(viewsets.ReadOnlyModelViewSet):
     filterset_fields = ["close_group__date", "account", "account__currency"]
     ordering_fields = ["close_group__date", "account__name"]
 
+    @action(detail=True, methods=["get"])
+    def export(self, request, pk=None):
+        content = export_daily_account_close_csv(self.get_object())
+        response = HttpResponse(content, content_type="text/csv")
+        response["Content-Disposition"] = f'attachment; filename="daily-close-{pk}.csv"'
+        return response
 
-class ProviderViewSet(viewsets.ModelViewSet):
+
+class ProviderViewSet(AuditedModelViewSet):
     permission_classes = [ReadOnlyOrStaff]
     queryset = Provider.objects.all()
     serializer_class = ProviderSerializer
@@ -303,7 +343,7 @@ class ProviderViewSet(viewsets.ModelViewSet):
         return Response(ProviderLedgerEntrySerializer(entry).data, status=status.HTTP_201_CREATED)
 
 
-class ProviderLedgerEntryViewSet(viewsets.ModelViewSet):
+class ProviderLedgerEntryViewSet(AuditedModelViewSet):
     permission_classes = [ReadOnlyOrStaff]
     queryset = ProviderLedgerEntry.objects.select_related("provider", "event", "cash_movement")
     serializer_class = ProviderLedgerEntrySerializer
@@ -312,15 +352,15 @@ class ProviderLedgerEntryViewSet(viewsets.ModelViewSet):
     ordering_fields = ["date", "amount", "created_at"]
 
 
-class EmployeeViewSet(viewsets.ModelViewSet):
+class EmployeeViewSet(AuditedModelViewSet):
     permission_classes = [ReadOnlyOrStaff]
     queryset = Employee.objects.all()
     serializer_class = EmployeeSerializer
-    search_fields = ["first_name", "last_name", "alias", "phone", "document_number"]
+    search_fields = ["first_name", "last_name", "alias", "phone", "document_number", "email"]
     ordering_fields = ["last_name", "first_name", "alias"]
 
 
-class EmployeeRoleViewSet(viewsets.ModelViewSet):
+class EmployeeRoleViewSet(AuditedModelViewSet):
     permission_classes = [ReadOnlyOrStaff]
     queryset = EmployeeRole.objects.all()
     serializer_class = EmployeeRoleSerializer
@@ -328,7 +368,7 @@ class EmployeeRoleViewSet(viewsets.ModelViewSet):
     ordering_fields = ["name"]
 
 
-class ClientViewSet(viewsets.ModelViewSet):
+class ClientViewSet(AuditedModelViewSet):
     permission_classes = [ReadOnlyOrStaff]
     queryset = Client.objects.all()
     serializer_class = ClientSerializer
@@ -336,7 +376,7 @@ class ClientViewSet(viewsets.ModelViewSet):
     ordering_fields = ["name"]
 
 
-class EventViewSet(viewsets.ModelViewSet):
+class EventViewSet(AuditedModelViewSet):
     permission_classes = [ReadOnlyOrStaff]
     queryset = Event.objects.select_related("client")
     serializer_class = EventSerializer
@@ -377,7 +417,7 @@ class EventViewSet(viewsets.ModelViewSet):
         return Response(EventBudgetSerializer(budget).data)
 
 
-class EventBudgetViewSet(viewsets.ModelViewSet):
+class EventBudgetViewSet(AuditedModelViewSet):
     permission_classes = [ReadOnlyOrStaff]
     queryset = EventBudget.objects.select_related("event", "event__client")
     serializer_class = EventBudgetSerializer
@@ -386,7 +426,7 @@ class EventBudgetViewSet(viewsets.ModelViewSet):
     ordering_fields = ["updated_at", "created_at", "event__event_date"]
 
 
-class EventBudgetItemViewSet(viewsets.ModelViewSet):
+class EventBudgetItemViewSet(AuditedModelViewSet):
     permission_classes = [ReadOnlyOrStaff]
     queryset = EventBudgetItem.objects.select_related("budget", "budget__event")
     serializer_class = EventBudgetItemSerializer
@@ -516,7 +556,7 @@ class EventBudgetPaymentWebhookAPIView(APIView):
         return None
 
 
-class EventStaffAssignmentViewSet(viewsets.ModelViewSet):
+class EventStaffAssignmentViewSet(AuditedModelViewSet):
     permission_classes = [ReadOnlyOrStaff]
     queryset = EventStaffAssignment.objects.select_related("event", "employee", "role")
     serializer_class = EventStaffAssignmentSerializer
@@ -525,7 +565,7 @@ class EventStaffAssignmentViewSet(viewsets.ModelViewSet):
     ordering_fields = ["work_date", "total_amount", "status"]
 
 
-class EmployeePaymentViewSet(viewsets.ModelViewSet):
+class EmployeePaymentViewSet(AuditedModelViewSet):
     permission_classes = [ReadOnlyOrStaff]
     queryset = EmployeePayment.objects.select_related("employee", "event", "assignment", "cash_movement")
     serializer_class = EmployeePaymentSerializer
@@ -552,13 +592,18 @@ class EmployeePaymentViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(payment).data, status=status.HTTP_201_CREATED)
 
 
-class GraduationEventViewSet(viewsets.ModelViewSet):
+class GraduationEventViewSet(AuditedModelViewSet):
     permission_classes = [ReadOnlyOrStaff]
     queryset = GraduationEvent.objects.select_related("event")
     serializer_class = GraduationEventSerializer
     filterset_fields = ["event", "active"]
     search_fields = ["event__name", "event__client__name", "notes"]
     ordering_fields = ["event__event_date", "price_per_ticket", "created_at"]
+
+    def perform_create(self, serializer):
+        obj = serializer.save()
+        create_graduation_ticket_price(obj, obj.price_per_ticket)
+        audit_log(request_user_or_none(self.request), "create", obj)
 
     @action(detail=True, methods=["get"])
     def graduates(self, request, pk=None):
@@ -568,14 +613,55 @@ class GraduationEventViewSet(viewsets.ModelViewSet):
             rows = rows.filter(Q(first_name__icontains=search) | Q(last_name__icontains=search))
         return Response(GraduateSerializer(rows, many=True).data)
 
+    @action(detail=True, methods=["post"], url_path="ticket-price")
+    def ticket_price(self, request, pk=None):
+        try:
+            price = create_graduation_ticket_price(
+                self.get_object(),
+                request.data.get("price"),
+                parse_date(request.data.get("valid_from"), timezone.localdate().replace(day=1)),
+                request.data.get("notes", ""),
+            )
+        except ValidationError as exc:
+            return validation_error_response(exc)
+        audit_log(request_user_or_none(request), "graduation_ticket_price", price)
+        return Response(GraduationTicketPriceSerializer(price).data, status=status.HTTP_201_CREATED)
 
-class GraduateViewSet(viewsets.ModelViewSet):
+    @action(detail=True, methods=["post"])
+    def close(self, request, pk=None):
+        try:
+            event = close_graduation_event(self.get_object(), request_user_or_none(request))
+        except ValidationError as exc:
+            return validation_error_response(exc)
+        return Response(self.get_serializer(event).data)
+
+    @action(detail=True, methods=["get"])
+    def export(self, request, pk=None):
+        content = export_graduation_event_csv(self.get_object())
+        response = HttpResponse(content, content_type="text/csv")
+        response["Content-Disposition"] = f'attachment; filename="graduation-event-{pk}.csv"'
+        return response
+
+
+class GraduateViewSet(AuditedModelViewSet):
     permission_classes = [ReadOnlyOrStaff]
     queryset = Graduate.objects.select_related("graduation_event", "graduation_event__event")
     serializer_class = GraduateSerializer
     filterset_fields = ["graduation_event"]
     search_fields = ["first_name", "last_name", "notes", "graduation_event__event__name"]
     ordering_fields = ["last_name", "first_name", "created_at"]
+
+    def perform_create(self, serializer):
+        graduation_event = serializer.validated_data["graduation_event"]
+        if graduation_event.closed_at:
+            raise ValidationError("La lista de egresados ya esta cerrada.")
+        super().perform_create(serializer)
+
+    def perform_update(self, serializer):
+        graduation_event = serializer.instance.graduation_event
+        if graduation_event.closed_at:
+            raise ValidationError("La lista de egresados ya esta cerrada.")
+        super().perform_update(serializer)
 
 
 class TicketPurchaseViewSet(viewsets.ReadOnlyModelViewSet):
@@ -585,6 +671,15 @@ class TicketPurchaseViewSet(viewsets.ReadOnlyModelViewSet):
     filterset_fields = ["graduation_event", "graduate", "status"]
     search_fields = ["email", "graduate__first_name", "graduate__last_name", "graduation_event__event__name", "mp_preference_id", "mp_payment_id"]
     ordering_fields = ["created_at", "total_amount", "status"]
+
+
+class GraduationTicketPriceViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
+    queryset = GraduationTicketPrice.objects.select_related("graduation_event", "graduation_event__event")
+    serializer_class = GraduationTicketPriceSerializer
+    filterset_fields = ["graduation_event", "valid_from"]
+    search_fields = ["graduation_event__event__name", "notes"]
+    ordering_fields = ["valid_from", "price"]
 
 
 class GraduationEventPublicAPIView(APIView):
@@ -598,8 +693,10 @@ class GraduationEventPublicAPIView(APIView):
                 "id": graduation_event.id,
                 "event_name": graduation_event.event.name,
                 "event_date": graduation_event.event.event_date,
-                "price_per_ticket": graduation_event.price_per_ticket,
+                "price_per_ticket": graduation_event.current_ticket_price(),
+                "current_price": graduation_event.current_ticket_price(),
                 "capacity": graduation_event.capacity,
+                "max_tickets_per_graduate": graduation_event.max_tickets_per_graduate,
             }
         )
 
@@ -639,6 +736,27 @@ class TicketPurchasePreferenceAPIView(APIView):
         payload["init_point"] = purchase.preference_init_point or None
         payload["sandbox_init_point"] = purchase.preference_sandbox_init_point or None
         return Response(payload, status=status.HTTP_201_CREATED)
+
+
+class TicketPurchaseManualAPIView(APIView):
+    permission_classes = [ReadOnlyOrStaff]
+
+    def post(self, request):
+        graduation_event = get_object_or_404(GraduationEvent, pk=request.data.get("graduation_event"))
+        try:
+            purchase = register_ticket_purchase_manual(
+                graduation_event=graduation_event,
+                graduate=request.data.get("graduate"),
+                quantity=request.data.get("quantity"),
+                account=request.data.get("account"),
+                email=request.data.get("email", ""),
+                payment_date=parse_date(request.data.get("payment_date"), timezone.localdate()),
+                payment_method=request.data.get("payment_method", "Efectivo"),
+                user=request_user_or_none(request),
+            )
+        except ValidationError as exc:
+            return validation_error_response(exc)
+        return Response(TicketPurchaseSerializer(purchase).data, status=status.HTTP_201_CREATED)
 
 
 class TicketPurchaseWebhookAPIView(APIView):
@@ -720,7 +838,7 @@ class TicketPurchaseWebhookAPIView(APIView):
         return None
 
 
-class TaxTypeViewSet(viewsets.ModelViewSet):
+class TaxTypeViewSet(AuditedModelViewSet):
     permission_classes = [ReadOnlyOrStaff]
     queryset = TaxType.objects.all()
     serializer_class = TaxTypeSerializer
@@ -728,7 +846,34 @@ class TaxTypeViewSet(viewsets.ModelViewSet):
     ordering_fields = ["name"]
 
 
-class TaxPaymentViewSet(viewsets.ModelViewSet):
+class ServiceTypeViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
+    queryset = ServiceType.objects.all()
+    serializer_class = ServiceTypeSerializer
+    search_fields = ["name", "description"]
+    ordering_fields = ["name"]
+
+
+class ServicePaymentAPIView(APIView):
+    permission_classes = [ReadOnlyOrStaff]
+
+    def post(self, request):
+        try:
+            movement = register_service_payment(
+                service_type=request.data.get("service_type"),
+                account=request.data.get("account"),
+                amount=request.data.get("amount"),
+                payment_date=parse_date(request.data.get("payment_date"), timezone.localdate()),
+                description=request.data.get("description", ""),
+                payment_method=request.data.get("payment_method", ""),
+                user=request_user_or_none(request),
+            )
+        except ValidationError as exc:
+            return validation_error_response(exc)
+        return Response(CashMovementSerializer(movement).data, status=status.HTTP_201_CREATED)
+
+
+class TaxPaymentViewSet(AuditedModelViewSet):
     permission_classes = [ReadOnlyOrStaff]
     queryset = TaxPayment.objects.select_related("tax_type", "account", "cash_movement")
     serializer_class = TaxPaymentSerializer
@@ -756,7 +901,7 @@ class TaxPaymentViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(tax_payment).data, status=status.HTTP_201_CREATED)
 
 
-class ReminderViewSet(viewsets.ModelViewSet):
+class ReminderViewSet(AuditedModelViewSet):
     permission_classes = [ReadOnlyOrStaff]
     queryset = Reminder.objects.select_related("related_tax_payment__tax_type", "related_event", "related_provider")
     serializer_class = ReminderSerializer
@@ -770,7 +915,16 @@ class ReminderViewSet(viewsets.ModelViewSet):
         reminder.status = Reminder.Status.DONE
         reminder.completed_at = timezone.now()
         reminder.save(update_fields=["status", "completed_at", "updated_at"])
+        audit_log(request_user_or_none(request), "reminder_complete", reminder)
         return Response(self.get_serializer(reminder).data)
+
+
+class AuditLogEntryViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = AuditLogEntry.objects.select_related("user")
+    serializer_class = AuditLogEntrySerializer
+    filterset_fields = ["user", "model_name", "action"]
+    search_fields = ["action", "model_name", "object_id", "detail", "user__username"]
+    ordering_fields = ["created_at", "action", "model_name"]
 
 
 class DashboardAPIView(APIView):

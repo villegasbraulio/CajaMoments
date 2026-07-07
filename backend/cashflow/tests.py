@@ -22,12 +22,15 @@ from .models import (
     EventStaffAssignment,
     Graduate,
     GraduationEvent,
+    GraduationTicketPrice,
     MovementCode,
     Provider,
     ProviderLedgerEntry,
     Reminder,
+    ServiceType,
     TicketPurchase,
     TaxType,
+    AuditLogEntry,
 )
 from .services import (
     calculate_account_balance,
@@ -38,10 +41,14 @@ from .services import (
     create_event_budget_payment_preference,
     build_cash_movement_receipt_pdf,
     create_ticket_purchase_preference,
+    close_graduation_event,
+    export_daily_account_close_csv,
     get_event_overview,
     register_event_budget_item_manual_payment,
     register_employee_payment,
     register_provider_payment,
+    register_service_payment,
+    register_ticket_purchase_manual,
     register_tax_payment,
     sync_event_budget_payment,
     sync_ticket_purchase_payment,
@@ -129,6 +136,21 @@ class CashflowServiceTests(TestCase):
         self.assertEqual(daily_close.total_expense, Decimal("25.00"))
         self.assertEqual(daily_close.calculated_balance, Decimal("75.00"))
         self.assertEqual(daily_close.difference, Decimal("0.00"))
+
+    def test_daily_close_export_includes_transfer_movements(self):
+        transfer = create_account_transfer(
+            from_account=self.cash,
+            to_account=self.bank,
+            amount=Decimal("30.00"),
+            transfer_date=self.today,
+            description="Deposito",
+        )
+        daily_close = close_daily_account(self.cash, self.today, Decimal("-30.00"))
+        self.assertEqual(daily_close.total_transfer_out, Decimal("30.00"))
+        content = export_daily_account_close_csv(daily_close)
+        self.assertIn("TRANSFER_OUT", content)
+        self.assertIn("TRANSFERENCIA_INTERNA", content)
+        self.assertIn(str(transfer.id), str(CashMovement.objects.filter(transfer=transfer).first().transfer_id))
 
     def test_daily_cash_group_closes_all_active_accounts(self):
         group = close_daily_cash_group(self.today, {str(self.cash.id): Decimal("0.00")})
@@ -494,7 +516,8 @@ class GraduationTicketTests(TestCase):
         call_command("seed_initial_data", verbosity=0)
         self.client_api = APIClient()
         self.event = Event.objects.get(name="Evento ejemplo")
-        self.graduation_event = GraduationEvent.objects.create(event=self.event, price_per_ticket=Decimal("1500.00"), capacity=100)
+        self.graduation_event = GraduationEvent.objects.create(event=self.event, price_per_ticket=Decimal("1500.00"), capacity=100, max_tickets_per_graduate=3)
+        GraduationTicketPrice.objects.create(graduation_event=self.graduation_event, price=Decimal("1500.00"), valid_from=date(2026, 6, 1))
         self.graduate = Graduate.objects.create(graduation_event=self.graduation_event, first_name="Ana", last_name="Lopez")
 
     @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
@@ -534,3 +557,49 @@ class GraduationTicketTests(TestCase):
         sync_ticket_purchase_payment(purchase.id, refund_payload)
         sync_ticket_purchase_payment(purchase.id, refund_payload)
         self.assertEqual(CashMovement.objects.filter(voucher_number="ticket_pay_123-ticket-reversal").count(), 1)
+
+    def test_ticket_price_limit_manual_payment_close_and_audit(self):
+        user = get_user_model().objects.create_user(username="ticket-admin", password="secret123", is_staff=True)
+        cash = Account.objects.get(name="EFECTIVO")
+        GraduationTicketPrice.objects.create(graduation_event=self.graduation_event, price=Decimal("2000.00"), valid_from=date(2026, 7, 1))
+        self.assertEqual(self.graduation_event.current_ticket_price(date(2026, 7, 10)), Decimal("2000.00"))
+
+        purchase = register_ticket_purchase_manual(
+            self.graduation_event,
+            self.graduate,
+            2,
+            cash,
+            email="ana@example.com",
+            payment_date=date(2026, 7, 10),
+            payment_method="Efectivo",
+            user=user,
+        )
+        self.assertEqual(purchase.total_amount, Decimal("4000.00"))
+        self.assertEqual(purchase.cash_movement.amount, Decimal("4000.00"))
+        self.assertEqual(purchase.created_by, user)
+        self.assertTrue(AuditLogEntry.objects.filter(user=user, action="ticket_purchase_manual").exists())
+
+        with self.assertRaises(ValidationError):
+            register_ticket_purchase_manual(self.graduation_event, self.graduate, 2, cash)
+
+        close_graduation_event(self.graduation_event, user=user)
+        self.graduation_event.refresh_from_db()
+        self.assertIsNotNone(self.graduation_event.closed_at)
+        with self.assertRaises(ValidationError):
+            register_ticket_purchase_manual(self.graduation_event, self.graduate, 1, cash)
+
+
+class PaymentsAndAuditTests(TestCase):
+    def setUp(self):
+        call_command("seed_initial_data", verbosity=0)
+        self.user = get_user_model().objects.create_user(username="ops", password="secret123", is_staff=True)
+        self.cash = Account.objects.get(name="EFECTIVO")
+
+    def test_employee_email_and_service_payment_audit(self):
+        employee = Employee.objects.create(first_name="Eva", last_name="Diaz", document_number="200", email="eva@example.com")
+        self.assertEqual(employee.email, "eva@example.com")
+        service_type, _ = ServiceType.objects.get_or_create(name="Internet")
+        movement = register_service_payment(service_type, self.cash, Decimal("123.00"), date(2026, 7, 10), "Fibra", "Transferencia", self.user)
+        self.assertEqual(movement.service_type, service_type)
+        self.assertEqual(movement.code.code, "SERVICIOS")
+        self.assertTrue(AuditLogEntry.objects.filter(user=self.user, action="service_payment", object_id=str(movement.id)).exists())

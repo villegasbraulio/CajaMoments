@@ -4,6 +4,7 @@ from django.core.exceptions import ValidationError
 from .models import (
     Account,
     AccountTransfer,
+    AuditLogEntry,
     CashMovement,
     Client,
     DailyAccountClose,
@@ -19,10 +20,12 @@ from .models import (
     EventStaffAssignment,
     Graduate,
     GraduationEvent,
+    GraduationTicketPrice,
     MovementCode,
     Provider,
     ProviderLedgerEntry,
     Reminder,
+    ServiceType,
     TaxPayment,
     TicketPurchase,
     TicketPurchaseWebhookLog,
@@ -181,10 +184,17 @@ class EventStaffAssignmentAdmin(AuditReadonlyMixin, admin.ModelAdmin):
 
 @admin.register(GraduationEvent)
 class GraduationEventAdmin(AuditReadonlyMixin, admin.ModelAdmin):
-    list_display = ("event", "price_per_ticket", "capacity", "paid_ticket_count", "active", "public_token")
+    list_display = ("event", "price_per_ticket", "capacity", "max_tickets_per_graduate", "paid_ticket_count", "active", "closed_at", "public_token")
     search_fields = ("event__name", "event__client__name", "notes")
-    list_filter = ("active",)
-    readonly_fields = AuditReadonlyMixin.readonly_fields + ("public_token",)
+    list_filter = ("active", "closed_at")
+    readonly_fields = AuditReadonlyMixin.readonly_fields + ("public_token", "closed_at", "closed_by")
+
+
+@admin.register(GraduationTicketPrice)
+class GraduationTicketPriceAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("graduation_event", "valid_from", "price")
+    search_fields = ("graduation_event__event__name", "notes")
+    list_filter = ("valid_from",)
 
 
 @admin.register(Graduate)
@@ -216,6 +226,21 @@ class TicketPurchaseWebhookLogAdmin(admin.ModelAdmin):
     search_fields = ("mp_notification_id", "deduplication_key", "error")
     list_filter = ("topic", "processed", "received_at")
     readonly_fields = ("mp_notification_id", "deduplication_key", "topic", "payload", "processed", "error", "received_at")
+
+
+@admin.register(ServiceType)
+class ServiceTypeAdmin(AuditReadonlyMixin, admin.ModelAdmin):
+    list_display = ("name", "active")
+    search_fields = ("name", "description")
+    list_filter = ("active",)
+
+
+@admin.register(AuditLogEntry)
+class AuditLogEntryAdmin(admin.ModelAdmin):
+    list_display = ("created_at", "user", "action", "model_name", "object_id")
+    search_fields = ("action", "model_name", "object_id", "detail", "user__username")
+    list_filter = ("action", "model_name", "created_at")
+    readonly_fields = ("user", "action", "model_name", "object_id", "detail", "created_at")
 
 
 @admin.register(EmployeePayment)

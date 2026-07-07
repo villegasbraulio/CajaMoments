@@ -5,6 +5,8 @@ import hashlib
 import hmac
 import json
 import logging
+import csv
+from io import StringIO
 from urllib.parse import urlencode, urlsplit
 
 from django.conf import settings
@@ -18,6 +20,7 @@ from django.utils.dateparse import parse_date as parse_iso_date, parse_datetime
 from .models import (
     Account,
     AccountTransfer,
+    AuditLogEntry,
     CashMovement,
     DailyAccountClose,
     DailyCashCloseGroup,
@@ -30,10 +33,12 @@ from .models import (
     EventStaffAssignment,
     Graduate,
     GraduationEvent,
+    GraduationTicketPrice,
     MovementCode,
     Provider,
     ProviderLedgerEntry,
     Reminder,
+    ServiceType,
     TaxPayment,
     TicketPurchase,
     TaxType,
@@ -48,6 +53,16 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+
+
+def audit_log(user, action, obj=None, detail=""):
+    if obj is None:
+        model_name = ""
+        object_id = ""
+    else:
+        model_name = obj.__class__.__name__
+        object_id = str(getattr(obj, "pk", "") or "")
+    return AuditLogEntry.objects.create(user=user, action=action, model_name=model_name, object_id=object_id, detail=detail)
 
 
 def get_code(code):
@@ -647,6 +662,18 @@ def _validate_capacity(graduation_event, quantity):
         raise ValidationError("No hay cupo suficiente para esa cantidad de tarjetas.")
 
 
+def _validate_graduate_ticket_limit(graduation_event, graduate, quantity):
+    if graduation_event.max_tickets_per_graduate is None:
+        return
+    current = (
+        graduate.ticket_purchases.filter(status__in=[TicketPurchase.Status.PAID, TicketPurchase.Status.IN_PROCESS, TicketPurchase.Status.PENDING])
+        .aggregate(total=Sum("quantity"))["total"]
+        or 0
+    )
+    if current + int(quantity) > graduation_event.max_tickets_per_graduate:
+        raise ValidationError("La cantidad supera el maximo acumulado permitido para este egresado.")
+
+
 @transaction.atomic
 def create_ticket_purchase_preference(graduation_event, graduate, quantity, email):
     if not isinstance(graduation_event, GraduationEvent):
@@ -657,6 +684,8 @@ def create_ticket_purchase_preference(graduation_event, graduate, quantity, emai
         raise ValidationError("El egresado no pertenece a este evento.")
     if not graduation_event.active:
         raise ValidationError("La venta de tarjetas no esta activa.")
+    if graduation_event.closed_at:
+        raise ValidationError("La lista de egresados ya esta cerrada.")
     try:
         quantity = int(quantity)
     except (TypeError, ValueError):
@@ -666,11 +695,13 @@ def create_ticket_purchase_preference(graduation_event, graduate, quantity, emai
     if not str(email or "").strip():
         raise ValidationError("El email es obligatorio.")
     _validate_capacity(graduation_event, quantity)
+    _validate_graduate_ticket_limit(graduation_event, graduate, quantity)
     purchase = TicketPurchase.objects.create(
         graduation_event=graduation_event,
         graduate=graduate,
         quantity=quantity,
         email=email,
+        payment_date=timezone.localdate(),
     )
     _send_ticket_purchase_summary(purchase)
     preference = MercadoPagoClient().create_ticket_preference(purchase)
@@ -682,6 +713,99 @@ def create_ticket_purchase_preference(graduation_event, graduate, quantity, emai
     purchase.preference_sandbox_init_point = str(preference.get("sandbox_init_point") or "")
     purchase.save(update_fields=["mp_preference_id", "preference_init_point", "preference_sandbox_init_point", "updated_at"])
     return purchase
+
+
+def create_graduation_ticket_price(graduation_event, price, valid_from=None, notes=""):
+    if not isinstance(graduation_event, GraduationEvent):
+        graduation_event = GraduationEvent.objects.get(pk=graduation_event)
+    valid_from = valid_from or timezone.localdate().replace(day=1)
+    return GraduationTicketPrice.objects.update_or_create(
+        graduation_event=graduation_event,
+        valid_from=valid_from,
+        defaults={"price": Decimal(str(price)), "notes": notes},
+    )[0]
+
+
+@transaction.atomic
+def register_ticket_purchase_manual(graduation_event, graduate, quantity, account, email="", payment_date=None, payment_method="Efectivo", user=None):
+    if not isinstance(graduation_event, GraduationEvent):
+        graduation_event = GraduationEvent.objects.select_for_update().select_related("event").get(pk=graduation_event)
+    if not isinstance(graduate, Graduate):
+        graduate = Graduate.objects.get(pk=graduate)
+    if not isinstance(account, Account):
+        account = Account.objects.get(pk=account)
+    if graduation_event.closed_at:
+        raise ValidationError("La lista de egresados ya esta cerrada.")
+    if graduate.graduation_event_id != graduation_event.id:
+        raise ValidationError("El egresado no pertenece a este evento.")
+    payment_date = payment_date or timezone.localdate()
+    quantity = int(quantity)
+    _validate_capacity(graduation_event, quantity)
+    _validate_graduate_ticket_limit(graduation_event, graduate, quantity)
+    ensure_account_day_is_open(account, payment_date)
+    purchase = TicketPurchase.objects.create(
+        graduation_event=graduation_event,
+        graduate=graduate,
+        quantity=quantity,
+        email=email or "sin-email@cajamoments.local",
+        status=TicketPurchase.Status.PAID,
+        payment_method=payment_method,
+        payment_date=payment_date,
+        created_by=user,
+    )
+    code = get_code("COBRO_EVENTO")
+    movement = CashMovement.objects.create(
+        date_payment=payment_date,
+        description=f"Venta manual tarjetas egresados - {graduate}",
+        movement_type=CashMovement.MovementType.INCOME,
+        amount=purchase.total_amount,
+        account=account,
+        code=code,
+        event=graduation_event.event,
+        payment_method=payment_method,
+        status=CashMovement.Status.CONFIRMED,
+        notes=f"Compra manual tarjetas #{purchase.id}",
+        created_by=user,
+        updated_by=user,
+    )
+    purchase.cash_movement = movement
+    purchase.save(update_fields=["cash_movement", "updated_at"])
+    audit_log(user, "ticket_purchase_manual", purchase, f"{quantity} tarjetas")
+    return purchase
+
+
+@transaction.atomic
+def close_graduation_event(graduation_event, user=None):
+    if not isinstance(graduation_event, GraduationEvent):
+        graduation_event = GraduationEvent.objects.select_for_update().get(pk=graduation_event)
+    if graduation_event.closed_at:
+        return graduation_event
+    graduation_event.closed_at = timezone.now()
+    graduation_event.closed_by = user
+    graduation_event.active = False
+    graduation_event.save(update_fields=["closed_at", "closed_by", "active", "updated_at"])
+    audit_log(user, "graduation_close", graduation_event)
+    return graduation_event
+
+
+def export_graduation_event_csv(graduation_event):
+    if not isinstance(graduation_event, GraduationEvent):
+        graduation_event = GraduationEvent.objects.get(pk=graduation_event)
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Egresado", "Cantidad", "Importe", "Email", "Estado", "Medio", "Fecha", "Movimiento caja"])
+    for purchase in graduation_event.purchases.select_related("graduate", "cash_movement").order_by("graduate__last_name", "graduate__first_name", "created_at"):
+        writer.writerow([
+            str(purchase.graduate),
+            purchase.quantity,
+            purchase.total_amount,
+            purchase.email,
+            purchase.status,
+            purchase.payment_method,
+            purchase.payment_date or "",
+            purchase.cash_movement_id or "",
+        ])
+    return output.getvalue()
 
 
 def _send_ticket_purchase_summary(purchase):
@@ -776,7 +900,8 @@ def ensure_ticket_purchase_cash_movement(purchase, payment_data=None):
         notes=f"Compra tarjetas #{purchase.id}",
     )
     purchase.cash_movement = movement
-    purchase.save(update_fields=["cash_movement", "updated_at"])
+    purchase.payment_date = movement.date_payment
+    purchase.save(update_fields=["cash_movement", "payment_date", "updated_at"])
     return movement
 
 
@@ -1012,8 +1137,38 @@ def build_cash_movement_receipt_pdf(movement):
     return bytes(pdf)
 
 
+def export_daily_account_close_csv(daily_close):
+    if not isinstance(daily_close, DailyAccountClose):
+        daily_close = DailyAccountClose.objects.select_related("account", "close_group").get(pk=daily_close)
+    movements = CashMovement.objects.filter(account=daily_close.account, date_payment=daily_close.close_group.date).select_related(
+        "code",
+        "provider",
+        "employee",
+        "event",
+        "service_type",
+    )
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Fecha", "Cuenta", "Tipo", "Codigo", "Descripcion", "Importe", "Proveedor", "Empleado", "Evento", "Servicio", "Estado"])
+    for movement in movements.order_by("id"):
+        writer.writerow([
+            movement.date_payment,
+            movement.account.name,
+            movement.movement_type,
+            movement.code.code,
+            movement.description,
+            movement.amount,
+            movement.provider.name if movement.provider_id else "",
+            str(movement.employee) if movement.employee_id else "",
+            movement.event.name if movement.event_id else "",
+            movement.service_type.name if movement.service_type_id else "",
+            movement.status,
+        ])
+    return output.getvalue()
+
+
 @transaction.atomic
-def close_daily_account(account, close_date, declared_balance, notes=""):
+def close_daily_account(account, close_date, declared_balance, notes="", user=None):
     if not isinstance(account, Account):
         account = Account.objects.select_for_update().get(pk=account)
 
@@ -1067,11 +1222,12 @@ def close_daily_account(account, close_date, declared_balance, notes=""):
             "closed_at": timezone.now(),
         },
     )
+    audit_log(user, "daily_account_close", daily_close)
     return daily_close
 
 
 @transaction.atomic
-def close_daily_cash_group(close_date, declared_balances=None, notes=""):
+def close_daily_cash_group(close_date, declared_balances=None, notes="", user=None):
     declared_balances = declared_balances or {}
     group, _ = DailyCashCloseGroup.objects.get_or_create(date=close_date)
     if group.status == DailyCashCloseGroup.Status.CLOSED:
@@ -1079,12 +1235,13 @@ def close_daily_cash_group(close_date, declared_balances=None, notes=""):
 
     for account in Account.objects.filter(active=True):
         declared_balance = declared_balances.get(str(account.id), calculate_account_balance(account, up_to_date=close_date))
-        close_daily_account(account, close_date, declared_balance)
+        close_daily_account(account, close_date, declared_balance, user=user)
 
     group.notes = notes
     group.status = DailyCashCloseGroup.Status.CLOSED
     group.closed_at = timezone.now()
     group.save(update_fields=["notes", "status", "closed_at", "updated_at"])
+    audit_log(user, "daily_cash_close", group)
     return group
 
 
@@ -1121,6 +1278,7 @@ def register_provider_payment(provider, account, amount, payment_date=None, even
         amount=amount,
         cash_movement=movement,
     )
+    audit_log(user, "provider_payment", ledger)
     return ledger
 
 
@@ -1168,7 +1326,33 @@ def register_employee_payment(employee, account, amount, payment_date=None, assi
         elif paid_amount > 0:
             assignment.status = EventStaffAssignment.Status.PARTIALLY_PAID
         assignment.save(update_fields=["status", "updated_at"])
+    audit_log(user, "employee_payment", payment)
     return payment
+
+
+@transaction.atomic
+def register_service_payment(service_type, account, amount, payment_date=None, description="", payment_method="", user=None):
+    if not isinstance(service_type, ServiceType):
+        service_type = ServiceType.objects.get(pk=service_type)
+    if not isinstance(account, Account):
+        account = Account.objects.get(pk=account)
+    payment_date = payment_date or timezone.localdate()
+    ensure_account_day_is_open(account, payment_date)
+    movement = CashMovement.objects.create(
+        date_payment=payment_date,
+        description=description or f"Pago de servicio - {service_type.name}",
+        movement_type=CashMovement.MovementType.EXPENSE,
+        amount=Decimal(str(amount)),
+        account=account,
+        code=get_code("SERVICIOS"),
+        service_type=service_type,
+        payment_method=payment_method,
+        status=CashMovement.Status.CONFIRMED,
+        created_by=user,
+        updated_by=user,
+    )
+    audit_log(user, "service_payment", movement)
+    return movement
 
 
 @transaction.atomic
@@ -1226,6 +1410,7 @@ def register_tax_payment(
             remind_before_days=remind_before_days,
             custom_days=custom_days,
         )
+    audit_log(user, "tax_payment", tax_payment)
     return tax_payment, reminder
 
 

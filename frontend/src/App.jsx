@@ -11,9 +11,11 @@ const navItems = [
   ["closes", "Cierres"],
   ["providers", "Proveedores"],
   ["people", "Personal eventual"],
+  ["payments", "Pagos"],
   ["events", "Eventos basicos"],
   ["graduation", "Egresados"],
   ["taxes", "Impuestos y recordatorios"],
+  ["audit", "Auditoria"],
   ["reports", "Reportes"],
 ];
 
@@ -92,6 +94,11 @@ function money(value, currency = "ARS") {
     currency,
     minimumFractionDigits: 2,
   }).format(number);
+}
+
+function thousands(value) {
+  if (value === "" || value === null || value === undefined) return "";
+  return new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(Number(value || 0));
 }
 
 function statusLabel(type) {
@@ -246,6 +253,20 @@ function downloadCsv(filename, columns, rows) {
   URL.revokeObjectURL(url);
 }
 
+async function downloadProtected(path, filename) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    headers: { Authorization: `Token ${localStorage.getItem(TOKEN_STORAGE_KEY) || ""}` },
+  });
+  if (!response.ok) throw new Error("No se pudo descargar el archivo.");
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 function exportRows(filename, columns, rows) {
   if (!rows.length) {
     window.alert("No hay datos para exportar.");
@@ -351,6 +372,8 @@ function App() {
     graduationEvents: [],
     graduates: [],
     ticketPurchases: [],
+    serviceTypes: [],
+    auditLog: [],
     taxTypes: [],
   });
   const [reloadKey, setReloadKey] = useState(0);
@@ -378,7 +401,7 @@ function App() {
   }
 
   async function loadRefs() {
-    const [accounts, movementCodes, providers, employees, roles, clients, events, eventBudgetPayments, assignments, graduationEvents, graduates, ticketPurchases, taxTypes] = await Promise.all([
+    const [accounts, movementCodes, providers, employees, roles, clients, events, eventBudgetPayments, assignments, graduationEvents, graduates, ticketPurchases, serviceTypes, auditLog, taxTypes] = await Promise.all([
       apiList("/accounts/"),
       apiList("/movement-codes/"),
       apiList("/providers/"),
@@ -391,6 +414,8 @@ function App() {
       apiList("/graduation-events/"),
       apiList("/graduates/"),
       apiList("/ticket-purchases/"),
+      apiList("/service-types/"),
+      apiList("/audit-log/"),
       apiList("/tax-types/"),
     ]);
     setRefs({
@@ -406,6 +431,8 @@ function App() {
       graduationEvents,
       graduates,
       ticketPurchases,
+      serviceTypes,
+      auditLog,
       taxTypes,
     });
   }
@@ -429,6 +456,8 @@ function App() {
         graduationEvents: [],
         graduates: [],
         ticketPurchases: [],
+        serviceTypes: [],
+        auditLog: [],
         taxTypes: [],
       });
       return;
@@ -471,9 +500,11 @@ function App() {
     closes: <ClosesScreen {...context} />,
     providers: <ProvidersScreen {...context} />,
     people: <PeopleScreen {...context} />,
+    payments: <PaymentsScreen {...context} />,
     events: <EventsScreen {...context} />,
     graduation: <GraduationScreen {...context} />,
     taxes: <TaxesScreen {...context} />,
+    audit: <AuditScreen refs={refs} />,
     reports: <ReportsScreen refs={refs} />,
   };
 
@@ -1250,9 +1281,14 @@ function ClosesScreen({ refs, mutate, reloadKey }) {
         <SimpleTable rows={dailySummary.account_closes || []} columns={[
           ["account_name", "Cuenta"],
           ["currency", "Moneda"],
+          [(row) => money(row.total_income, row.currency), "Ingresos"],
+          [(row) => money(row.total_expense, row.currency), "Egresos"],
+          [(row) => money(row.total_transfer_in, row.currency), "Transf. +"],
+          [(row) => money(row.total_transfer_out, row.currency), "Transf. -"],
           [(row) => money(row.calculated_balance, row.currency), "Calculado"],
           [(row) => money(row.declared_balance, row.currency), "Declarado"],
           [(row) => money(row.difference, row.currency), "Diferencia"],
+          [(row) => <button className="btn btn-sm btn-outline-dark" onClick={() => downloadProtected(`/daily-account-closes/${row.id}/export/`, `cierre-${date}-${row.account_name}.csv`)}>Movimientos</button>, ""],
         ]} />
       </div>
       <div className="work-card">
@@ -1314,6 +1350,14 @@ function ProvidersScreen({ refs, mutate, reloadKey }) {
             <TextInput label="Telefono" value={providerForm.phone} onChange={(v) => setProviderForm({ ...providerForm, phone: v })} />
             <button className="btn btn-olive w-100 mt-2">Crear proveedor</button>
           </form>
+          <div className="work-card mt-3">
+            <h4 className="section-title">Listado</h4>
+            <SimpleTable rows={refs.providers} columns={[
+              ["name", "Proveedor"],
+              [(row) => money(row.balance), "Saldo"],
+              [(row) => <button className="btn btn-sm btn-outline-dark" onClick={() => setSelectedProvider(String(row.id))}>Pagar</button>, ""],
+            ]} />
+          </div>
           <div className="work-card mt-3">
             <SelectInput label="Proveedor" value={selectedProvider} onChange={setSelectedProvider} options={refs.providers} labelFor={(p) => `${p.name} (${money(p.balance)})`} />
             {selected && <div className="metric-card mt-2"><span className="text-muted small">Saldo</span><strong className="d-block">{money(selected.balance)}</strong></div>}
@@ -1410,7 +1454,7 @@ function ProvidersScreen({ refs, mutate, reloadKey }) {
 }
 
 function PeopleScreen({ refs, mutate }) {
-  const [employee, setEmployee] = useState({ first_name: "", last_name: "", alias: "", phone: "", document_number: "" });
+  const [employee, setEmployee] = useState({ first_name: "", last_name: "", alias: "", phone: "", document_number: "", email: "" });
   const [selectedEmployeeId, setSelectedEmployeeId] = useState("");
   const [editingEmployee, setEditingEmployee] = useState(null);
   const [roleName, setRoleName] = useState("");
@@ -1437,8 +1481,9 @@ function PeopleScreen({ refs, mutate }) {
             <h4 className="section-title">Empleado</h4>
             <TextInput label="Nombre" value={employee.first_name} onChange={(v) => setEmployee({ ...employee, first_name: v })} required />
             <TextInput label="Apellido" value={employee.last_name} onChange={(v) => setEmployee({ ...employee, last_name: v })} required />
-            <TextInput label="Alias" value={employee.alias} onChange={(v) => setEmployee({ ...employee, alias: v })} />
+            <TextInput label="Alias bancario" value={employee.alias} onChange={(v) => setEmployee({ ...employee, alias: v })} />
             <TextInput label="Telefono" value={employee.phone} onChange={(v) => setEmployee({ ...employee, phone: v })} />
+            <TextInput label="Email" type="email" value={employee.email} onChange={(v) => setEmployee({ ...employee, email: v })} />
             <button className="btn btn-olive w-100 mt-2">Crear empleado</button>
           </form>
           <form className="work-card mt-3" onSubmit={(e) => {
@@ -1463,7 +1508,9 @@ function PeopleScreen({ refs, mutate }) {
                 <SelectInput label="Rol" value={assignment.role} onChange={(v) => setAssignment({ ...assignment, role: v })} options={refs.roles} labelFor={(r) => r.name} required />
                 <TextInput label="Fecha trabajo" type="date" value={assignment.work_date} onChange={(v) => setAssignment({ ...assignment, work_date: v })} />
                 <TextInput label="Base" type="number" value={assignment.base_amount} onChange={(v) => setAssignment({ ...assignment, base_amount: v })} required />
+                <div className="small text-muted">Base: {thousands(assignment.base_amount)}</div>
                 <TextInput label="Extra" type="number" value={assignment.extra_amount} onChange={(v) => setAssignment({ ...assignment, extra_amount: v })} />
+                <div className="small text-muted">Extra: {thousands(assignment.extra_amount)}</div>
                 <button className="btn btn-olive w-100 mt-2">Asignar</button>
               </form>
             </div>
@@ -1474,6 +1521,7 @@ function PeopleScreen({ refs, mutate }) {
                 mutate(() => api("/employee-payments/", { method: "POST", body: JSON.stringify({ ...payment, employee: payment.employee || selectedAssignment?.employee }) }), "Pago a empleado registrado");
               }}>
                 <h4 className="section-title">Pago parcial/total</h4>
+                {/* TODO: enviar automaticamente el comprobante de pago al email del empleado cuando exista backend de envio operativo. */}
                 <SelectInput label="Empleado" value={payment.employee} onChange={(v) => setPayment({ ...payment, employee: v })} options={refs.employees} labelFor={(e) => e.display_name || `${e.first_name} ${e.last_name}`} required />
                 <SelectInput label="Asignacion" value={payment.assignment} onChange={(v) => {
                   const selected = refs.assignments.find((item) => String(item.id) === String(v));
@@ -1482,6 +1530,7 @@ function PeopleScreen({ refs, mutate }) {
                 <SelectInput label="Cuenta" value={payment.account} onChange={(v) => setPayment({ ...payment, account: v })} options={refs.accounts} labelFor={(a) => a.name} required />
                 <TextInput label="Fecha pago" type="date" value={payment.payment_date} onChange={(v) => setPayment({ ...payment, payment_date: v })} />
                 <TextInput label="Importe" type="number" value={payment.amount} onChange={(v) => setPayment({ ...payment, amount: v })} required />
+                <div className="small text-muted">Importe: {thousands(payment.amount)}</div>
                 <TextInput label="Notas" value={payment.notes} onChange={(v) => setPayment({ ...payment, notes: v })} />
                 <button className="btn btn-earth w-100 mt-2">Registrar pago</button>
               </form>
@@ -1492,8 +1541,13 @@ function PeopleScreen({ refs, mutate }) {
             <SimpleTable rows={refs.employees} columns={[
               [(row) => row.display_name || `${row.first_name} ${row.last_name}`, "Nombre"],
               ["phone", "Telefono"],
+              ["email", "Email"],
               ["document_number", "Documento"],
               [(row) => (row.active ? "Activo" : "Inactivo"), "Estado"],
+              [(row) => <button className="btn btn-sm btn-outline-dark" onClick={() => {
+                setSelectedEmployeeId(String(row.id));
+                setPayment({ ...payment, employee: String(row.id) });
+              }}>Pagar</button>, ""],
               [(row) => <button className="btn btn-sm btn-outline-dark" onClick={() => setSelectedEmployeeId(String(row.id))}>Ficha</button>, ""],
             ]} />
           </div>
@@ -1509,9 +1563,10 @@ function PeopleScreen({ refs, mutate }) {
               <div className="row g-2">
                 <div className="col-md-6"><TextInput label="Nombre" value={editingEmployee.first_name || ""} onChange={(v) => setEditingEmployee({ ...editingEmployee, first_name: v })} /></div>
                 <div className="col-md-6"><TextInput label="Apellido" value={editingEmployee.last_name || ""} onChange={(v) => setEditingEmployee({ ...editingEmployee, last_name: v })} /></div>
-                <div className="col-md-4"><TextInput label="Alias" value={editingEmployee.alias || ""} onChange={(v) => setEditingEmployee({ ...editingEmployee, alias: v })} /></div>
+                <div className="col-md-4"><TextInput label="Alias bancario" value={editingEmployee.alias || ""} onChange={(v) => setEditingEmployee({ ...editingEmployee, alias: v })} /></div>
                 <div className="col-md-4"><TextInput label="Telefono" value={editingEmployee.phone || ""} onChange={(v) => setEditingEmployee({ ...editingEmployee, phone: v })} /></div>
                 <div className="col-md-4"><TextInput label="Documento" value={editingEmployee.document_number || ""} onChange={(v) => setEditingEmployee({ ...editingEmployee, document_number: v })} /></div>
+                <div className="col-md-6"><TextInput label="Email" type="email" value={editingEmployee.email || ""} onChange={(v) => setEditingEmployee({ ...editingEmployee, email: v })} /></div>
                 <div className="col-12"><TextAreaInput label="Notas" value={editingEmployee.notes || ""} onChange={(v) => setEditingEmployee({ ...editingEmployee, notes: v })} rows={2} /></div>
               </div>
               <button className="btn btn-outline-dark btn-sm mt-2">Guardar empleado</button>
@@ -1538,6 +1593,113 @@ function PeopleScreen({ refs, mutate }) {
             ]} />
           </div>
         </div>
+      </div>
+    </>
+  );
+}
+
+function PaymentsScreen({ refs, mutate }) {
+  const [tab, setTab] = useState("providers");
+  const [providerPayment, setProviderPayment] = useState({ provider: "", account: "", amount: "", date: todayISO(), description: "", document_number: "" });
+  const [employeePayment, setEmployeePayment] = useState({ employee: "", assignment: "", account: "", amount: "", payment_date: todayISO(), notes: "" });
+  const [servicePayment, setServicePayment] = useState({ service_type: "", account: "", amount: "", payment_date: todayISO(), description: "", payment_method: "" });
+  const [newServiceType, setNewServiceType] = useState("");
+  const [ticketPayment, setTicketPayment] = useState({ graduation_event: "", graduate: "", account: "", quantity: "1", email: "", payment_date: todayISO(), payment_method: "Efectivo" });
+  const graduatesForEvent = refs.graduates.filter((row) => String(row.graduation_event) === String(ticketPayment.graduation_event));
+  const tabs = [
+    ["providers", "Proveedores"],
+    ["employees", "Empleados"],
+    ["services", "Servicios"],
+    ["graduation", "Egresados"],
+  ];
+
+  return (
+    <>
+      <PageHeader title="Pagos" kicker="Operaciones">
+        Registra pagos operativos por categoria. Todos impactan en caja con su movimiento confirmado.
+      </PageHeader>
+      <div className="work-card">
+        <div className="btn-group mb-3">
+          {tabs.map(([key, label]) => (
+            <button key={key} className={`btn ${tab === key ? "btn-earth" : "btn-outline-dark"}`} onClick={() => setTab(key)}>{label}</button>
+          ))}
+        </div>
+
+        {tab === "providers" && (
+          <form onSubmit={(event) => {
+            event.preventDefault();
+            mutate(() => api(`/providers/${providerPayment.provider}/pay/`, { method: "POST", body: JSON.stringify(providerPayment) }), "Pago a proveedor registrado");
+          }}>
+            <div className="row g-2">
+              <div className="col-md-4"><SelectInput label="Proveedor" value={providerPayment.provider} onChange={(v) => setProviderPayment({ ...providerPayment, provider: v })} options={refs.providers} labelFor={(p) => p.name} required /></div>
+              <div className="col-md-4"><SelectInput label="Cuenta" value={providerPayment.account} onChange={(v) => setProviderPayment({ ...providerPayment, account: v })} options={refs.accounts} labelFor={(a) => a.name} required /></div>
+              <div className="col-md-2"><TextInput label="Fecha" type="date" value={providerPayment.date} onChange={(v) => setProviderPayment({ ...providerPayment, date: v })} /></div>
+              <div className="col-md-2"><TextInput label="Importe" type="number" value={providerPayment.amount} onChange={(v) => setProviderPayment({ ...providerPayment, amount: v })} required /></div>
+              <div className="col-md-8"><TextInput label="Descripcion" value={providerPayment.description} onChange={(v) => setProviderPayment({ ...providerPayment, description: v })} /></div>
+              <div className="col-md-4"><TextInput label="Documento" value={providerPayment.document_number} onChange={(v) => setProviderPayment({ ...providerPayment, document_number: v })} /></div>
+            </div>
+            <button className="btn btn-earth mt-2">Registrar pago</button>
+          </form>
+        )}
+
+        {tab === "employees" && (
+          <form onSubmit={(event) => {
+            event.preventDefault();
+            const selectedAssignment = refs.assignments.find((item) => String(item.id) === String(employeePayment.assignment));
+            mutate(() => api("/employee-payments/", { method: "POST", body: JSON.stringify({ ...employeePayment, employee: employeePayment.employee || selectedAssignment?.employee }) }), "Pago a empleado registrado");
+          }}>
+            {/* TODO: enviar automaticamente el comprobante de pago al email del empleado cuando exista backend de envio operativo. */}
+            <div className="row g-2">
+              <div className="col-md-4"><SelectInput label="Empleado" value={employeePayment.employee} onChange={(v) => setEmployeePayment({ ...employeePayment, employee: v })} options={refs.employees} labelFor={(e) => e.display_name || `${e.first_name} ${e.last_name}`} required /></div>
+              <div className="col-md-4"><SelectInput label="Asignacion" value={employeePayment.assignment} onChange={(v) => setEmployeePayment({ ...employeePayment, assignment: v })} options={refs.assignments} labelFor={(a) => `${a.event_name} - ${a.employee_name} - ${money(a.pending_amount)}`} empty="Sin asignacion" /></div>
+              <div className="col-md-4"><SelectInput label="Cuenta" value={employeePayment.account} onChange={(v) => setEmployeePayment({ ...employeePayment, account: v })} options={refs.accounts} labelFor={(a) => a.name} required /></div>
+              <div className="col-md-3"><TextInput label="Fecha" type="date" value={employeePayment.payment_date} onChange={(v) => setEmployeePayment({ ...employeePayment, payment_date: v })} /></div>
+              <div className="col-md-3"><TextInput label="Importe" type="number" value={employeePayment.amount} onChange={(v) => setEmployeePayment({ ...employeePayment, amount: v })} required /></div>
+              <div className="col-md-6"><TextInput label="Notas" value={employeePayment.notes} onChange={(v) => setEmployeePayment({ ...employeePayment, notes: v })} /></div>
+            </div>
+            <div className="small text-muted mt-1">Importe: {thousands(employeePayment.amount)}</div>
+            <button className="btn btn-earth mt-2">Registrar pago</button>
+          </form>
+        )}
+
+        {tab === "services" && (
+          <form onSubmit={(event) => {
+            event.preventDefault();
+            mutate(() => api("/service-payments/", { method: "POST", body: JSON.stringify(servicePayment) }), "Pago de servicio registrado");
+          }}>
+            <div className="row g-2">
+              <div className="col-md-4"><SelectInput label="Tipo servicio" value={servicePayment.service_type} onChange={(v) => setServicePayment({ ...servicePayment, service_type: v })} options={refs.serviceTypes} labelFor={(s) => s.name} required /></div>
+              <div className="col-md-4"><SelectInput label="Cuenta" value={servicePayment.account} onChange={(v) => setServicePayment({ ...servicePayment, account: v })} options={refs.accounts} labelFor={(a) => a.name} required /></div>
+              <div className="col-md-2"><TextInput label="Fecha" type="date" value={servicePayment.payment_date} onChange={(v) => setServicePayment({ ...servicePayment, payment_date: v })} /></div>
+              <div className="col-md-2"><TextInput label="Importe" type="number" value={servicePayment.amount} onChange={(v) => setServicePayment({ ...servicePayment, amount: v })} required /></div>
+              <div className="col-md-8"><TextInput label="Descripcion" value={servicePayment.description} onChange={(v) => setServicePayment({ ...servicePayment, description: v })} required /></div>
+              <div className="col-md-4"><TextInput label="Metodo" value={servicePayment.payment_method} onChange={(v) => setServicePayment({ ...servicePayment, payment_method: v })} /></div>
+            </div>
+            <div className="d-flex gap-2 mt-2">
+              <button className="btn btn-earth">Registrar servicio</button>
+              <TextInput label="Nuevo tipo" value={newServiceType} onChange={setNewServiceType} />
+              <button type="button" className="btn btn-outline-dark align-self-end" onClick={() => mutate(() => api("/service-types/", { method: "POST", body: JSON.stringify({ name: newServiceType }) }), "Tipo de servicio creado")}>Agregar tipo</button>
+            </div>
+          </form>
+        )}
+
+        {tab === "graduation" && (
+          <form onSubmit={(event) => {
+            event.preventDefault();
+            mutate(() => api("/ticket-purchases/manual/", { method: "POST", body: JSON.stringify(ticketPayment) }), "Pago manual de tarjetas registrado");
+          }}>
+            <div className="row g-2">
+              <div className="col-md-4"><SelectInput label="Evento egresados" value={ticketPayment.graduation_event} onChange={(v) => setTicketPayment({ ...ticketPayment, graduation_event: v, graduate: "" })} options={refs.graduationEvents} labelFor={(e) => e.event_name} required /></div>
+              <div className="col-md-4"><SelectInput label="Egresado" value={ticketPayment.graduate} onChange={(v) => setTicketPayment({ ...ticketPayment, graduate: v })} options={graduatesForEvent} labelFor={(g) => g.display_name} required /></div>
+              <div className="col-md-4"><SelectInput label="Cuenta" value={ticketPayment.account} onChange={(v) => setTicketPayment({ ...ticketPayment, account: v })} options={refs.accounts} labelFor={(a) => a.name} required /></div>
+              <div className="col-md-2"><TextInput label="Cantidad" type="number" value={ticketPayment.quantity} onChange={(v) => setTicketPayment({ ...ticketPayment, quantity: v })} required /></div>
+              <div className="col-md-3"><TextInput label="Fecha" type="date" value={ticketPayment.payment_date} onChange={(v) => setTicketPayment({ ...ticketPayment, payment_date: v })} /></div>
+              <div className="col-md-3"><TextInput label="Medio" value={ticketPayment.payment_method} onChange={(v) => setTicketPayment({ ...ticketPayment, payment_method: v })} /></div>
+              <div className="col-md-4"><TextInput label="Email" type="email" value={ticketPayment.email} onChange={(v) => setTicketPayment({ ...ticketPayment, email: v })} /></div>
+            </div>
+            <button className="btn btn-earth mt-2">Registrar tarjetas</button>
+          </form>
+        )}
       </div>
     </>
   );
@@ -2289,7 +2451,8 @@ function EventsScreen({ refs, mutate, reloadKey }) {
 }
 
 function GraduationScreen({ refs, mutate }) {
-  const [form, setForm] = useState({ event: "", price_per_ticket: "", capacity: "", active: true, notes: "" });
+  const [form, setForm] = useState({ event: "", price_per_ticket: "", capacity: "", max_tickets_per_graduate: "", active: true, notes: "" });
+  const [priceForm, setPriceForm] = useState({ price: "", valid_from: todayISO().slice(0, 8) + "01", notes: "" });
   const [graduate, setGraduate] = useState({ graduation_event: "", first_name: "", last_name: "", notes: "" });
   const [selected, setSelected] = useState("");
   const selectedEvent = refs.graduationEvents.find((row) => String(row.id) === String(selected));
@@ -2309,7 +2472,7 @@ function GraduationScreen({ refs, mutate }) {
             onSubmit={(event) => {
               event.preventDefault();
               mutate(
-                () => api("/graduation-events/", { method: "POST", body: JSON.stringify({ ...form, capacity: form.capacity || null }) }),
+                () => api("/graduation-events/", { method: "POST", body: JSON.stringify({ ...form, capacity: form.capacity || null, max_tickets_per_graduate: form.max_tickets_per_graduate || null }) }),
                 "Evento de egresados creado",
               );
             }}
@@ -2318,6 +2481,7 @@ function GraduationScreen({ refs, mutate }) {
             <SelectInput label="Evento base" value={form.event} onChange={(v) => setForm({ ...form, event: v })} options={refs.events} labelFor={(e) => e.name} required />
             <TextInput label="Precio tarjeta" type="number" value={form.price_per_ticket} onChange={(v) => setForm({ ...form, price_per_ticket: v })} required />
             <TextInput label="Cupo" type="number" value={form.capacity} onChange={(v) => setForm({ ...form, capacity: v })} />
+            <TextInput label="Maximo por egresado" type="number" value={form.max_tickets_per_graduate} onChange={(v) => setForm({ ...form, max_tickets_per_graduate: v })} />
             <TextAreaInput label="Notas" value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} rows={2} />
             <button className="btn btn-earth w-100 mt-2">Crear link</button>
           </form>
@@ -2329,7 +2493,15 @@ function GraduationScreen({ refs, mutate }) {
             {publicLink && (
               <div className="mt-2">
                 <TextInput label="Link publico" value={publicLink} onChange={() => {}} />
-                <button className="btn btn-sm btn-outline-dark" onClick={() => navigator.clipboard?.writeText(publicLink)}>Copiar link</button>
+                <div className="small text-muted mb-2">Precio vigente: {money(selectedEvent.current_price || selectedEvent.price_per_ticket)} · Max por egresado: {selectedEvent.max_tickets_per_graduate || "Sin limite"} {selectedEvent.closed_at ? "· Cerrado" : ""}</div>
+                <div className="d-flex flex-wrap gap-2">
+                  <button className="btn btn-sm btn-outline-dark" onClick={() => navigator.clipboard?.writeText(publicLink)}>Copiar link</button>
+                  <button className="btn btn-sm btn-outline-danger" onClick={() => {
+                    if (!window.confirm("Cerrar lista final de egresados?")) return;
+                    mutate(() => api(`/graduation-events/${selected}/close/`, { method: "POST", body: JSON.stringify({}) }), "Lista de egresados cerrada");
+                  }}>Cerrar lista</button>
+                  <button className="btn btn-sm btn-outline-dark" onClick={() => downloadProtected(`/graduation-events/${selected}/export/`, `egresados-${selected}.csv`)}>Exportar final</button>
+                </div>
               </div>
             )}
           </div>
@@ -2338,6 +2510,19 @@ function GraduationScreen({ refs, mutate }) {
           {selectedEvent ? (
             <div className="row g-3">
               <div className="col-md-5">
+                <form
+                  className="work-card mb-3"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    mutate(() => api(`/graduation-events/${selected}/ticket-price/`, { method: "POST", body: JSON.stringify(priceForm) }), "Precio mensual guardado");
+                  }}
+                >
+                  <h4 className="section-title">Precio mensual</h4>
+                  <TextInput label="Vigente desde" type="date" value={priceForm.valid_from} onChange={(v) => setPriceForm({ ...priceForm, valid_from: v })} />
+                  <TextInput label="Precio" type="number" value={priceForm.price} onChange={(v) => setPriceForm({ ...priceForm, price: v })} required />
+                  <TextInput label="Notas" value={priceForm.notes} onChange={(v) => setPriceForm({ ...priceForm, notes: v })} />
+                  <button className="btn btn-outline-dark w-100 mt-2">Guardar precio</button>
+                </form>
                 <form
                   className="work-card"
                   onSubmit={(event) => {
@@ -2379,6 +2564,32 @@ function GraduationScreen({ refs, mutate }) {
             <div className="work-card">Elegí o creá un evento de egresados.</div>
           )}
         </div>
+      </div>
+    </>
+  );
+}
+
+function AuditScreen({ refs }) {
+  const [query, setQuery] = useState("");
+  const rows = refs.auditLog.filter((row) => {
+    const haystack = [row.username, row.action, row.model_name, row.object_id, row.detail].filter(Boolean).join(" ").toLowerCase();
+    return !query || haystack.includes(query.toLowerCase());
+  });
+  return (
+    <>
+      <PageHeader title="Auditoria" kicker="Trazabilidad">
+        Consulta acciones registradas por usuario, modelo y detalle.
+      </PageHeader>
+      <div className="work-card">
+        <TextInput label="Buscar" value={query} onChange={setQuery} placeholder="usuario, accion, modelo..." />
+        <SimpleTable rows={rows} columns={[
+          [(row) => row.created_at, "Fecha"],
+          ["username", "Usuario"],
+          ["action", "Accion"],
+          ["model_name", "Modelo"],
+          ["object_id", "Objeto"],
+          ["detail", "Detalle"],
+        ]} />
       </div>
     </>
   );
