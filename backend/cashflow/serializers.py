@@ -3,6 +3,7 @@ from rest_framework import serializers
 from .models import (
     Account,
     AccountTransfer,
+    AuditLogEntry,
     CashMovement,
     Client,
     DailyAccountClose,
@@ -11,12 +12,20 @@ from .models import (
     EmployeePayment,
     EmployeeRole,
     Event,
+    EventBudget,
+    EventBudgetItem,
+    EventBudgetPayment,
     EventStaffAssignment,
+    Graduate,
+    GraduationEvent,
+    GraduationTicketPrice,
     MovementCode,
     Provider,
     ProviderLedgerEntry,
     Reminder,
+    ServiceType,
     TaxPayment,
+    TicketPurchase,
     TaxType,
 )
 from .services import calculate_account_balance
@@ -75,10 +84,93 @@ class ClientSerializer(serializers.ModelSerializer):
 
 class EventSerializer(serializers.ModelSerializer):
     client_name = serializers.CharField(source="client.name", read_only=True)
+    client_phone = serializers.CharField(source="client.phone", read_only=True)
+    client_email = serializers.CharField(source="client.email", read_only=True)
+    client_notes = serializers.CharField(source="client.notes", read_only=True)
+    guest_count_total = serializers.SerializerMethodField()
+    display_contact = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
         fields = "__all__"
+
+    def get_guest_count_total(self, obj):
+        dinner = obj.guest_count_dinner or 0
+        toast = obj.guest_count_toast or 0
+        return max(dinner, toast)
+
+    def get_display_contact(self, obj):
+        return obj.client_display()
+
+
+class EventBudgetItemSerializer(serializers.ModelSerializer):
+    event_id = serializers.IntegerField(source="budget.event_id", read_only=True)
+    event_name = serializers.CharField(source="budget.event.name", read_only=True)
+
+    class Meta:
+        model = EventBudgetItem
+        fields = "__all__"
+        read_only_fields = ["total"]
+
+
+class EventBudgetPaymentSerializer(serializers.ModelSerializer):
+    event_id = serializers.IntegerField(source="budget.event_id", read_only=True)
+    event_name = serializers.CharField(source="budget.event.name", read_only=True)
+    budget_item_name = serializers.CharField(source="budget_item.service_name", read_only=True)
+    cash_movement_account = serializers.CharField(source="cash_movement.account.name", read_only=True)
+    cash_movement_date = serializers.DateField(source="cash_movement.date_payment", read_only=True)
+
+    class Meta:
+        model = EventBudgetPayment
+        fields = "__all__"
+        read_only_fields = [
+            "idempotency_key",
+            "mp_preference_id",
+            "preference_init_point",
+            "preference_sandbox_init_point",
+            "mp_payment_id",
+            "mp_merchant_order_id",
+            "status",
+            "status_detail",
+            "payment_method",
+            "payment_type",
+            "installments",
+            "amount",
+            "currency",
+            "cash_movement",
+            "cash_movement_account",
+            "cash_movement_date",
+        ]
+
+
+class EventBudgetSerializer(serializers.ModelSerializer):
+    event_name = serializers.CharField(source="event.name", read_only=True)
+    item_count = serializers.SerializerMethodField()
+    subtotal = serializers.SerializerMethodField()
+    optional_total = serializers.SerializerMethodField()
+    grand_total = serializers.SerializerMethodField()
+    items = EventBudgetItemSerializer(many=True, read_only=True)
+    latest_payment = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EventBudget
+        fields = "__all__"
+
+    def get_item_count(self, obj):
+        return obj.items.count()
+
+    def get_subtotal(self, obj):
+        return obj.subtotal()
+
+    def get_optional_total(self, obj):
+        return obj.optional_total()
+
+    def get_grand_total(self, obj):
+        return obj.total()
+
+    def get_latest_payment(self, obj):
+        payment = obj.payments.order_by("-created_at").first()
+        return EventBudgetPaymentSerializer(payment).data if payment else None
 
 
 class EventStaffAssignmentSerializer(serializers.ModelSerializer):
@@ -103,9 +195,88 @@ class EventStaffAssignmentSerializer(serializers.ModelSerializer):
         return str(obj.employee)
 
 
+class GraduationEventSerializer(serializers.ModelSerializer):
+    event_name = serializers.CharField(source="event.name", read_only=True)
+    event_date = serializers.DateField(source="event.event_date", read_only=True)
+    public_url_token = serializers.CharField(source="public_token", read_only=True)
+    paid_ticket_count = serializers.SerializerMethodField()
+    current_price = serializers.SerializerMethodField()
+
+    class Meta:
+        model = GraduationEvent
+        fields = "__all__"
+        read_only_fields = ["public_token"]
+
+    def get_paid_ticket_count(self, obj):
+        return obj.paid_ticket_count()
+
+    def get_current_price(self, obj):
+        return obj.current_ticket_price()
+
+
+class GraduationTicketPriceSerializer(serializers.ModelSerializer):
+    event_name = serializers.CharField(source="graduation_event.event.name", read_only=True)
+
+    class Meta:
+        model = GraduationTicketPrice
+        fields = "__all__"
+
+
+class GraduateSerializer(serializers.ModelSerializer):
+    display_name = serializers.SerializerMethodField()
+    event_name = serializers.CharField(source="graduation_event.event.name", read_only=True)
+
+    class Meta:
+        model = Graduate
+        fields = "__all__"
+
+    def get_display_name(self, obj):
+        return str(obj)
+
+    def validate(self, attrs):
+        graduation_event = attrs.get("graduation_event") or getattr(self.instance, "graduation_event", None)
+        if graduation_event and graduation_event.closed_at:
+            raise serializers.ValidationError("La lista de egresados ya esta cerrada.")
+        return attrs
+
+
+class TicketPurchaseSerializer(serializers.ModelSerializer):
+    graduate_name = serializers.SerializerMethodField()
+    event_name = serializers.CharField(source="graduation_event.event.name", read_only=True)
+    cash_movement_account = serializers.CharField(source="cash_movement.account.name", read_only=True)
+    cash_movement_date = serializers.DateField(source="cash_movement.date_payment", read_only=True)
+    created_by_username = serializers.CharField(source="created_by.username", read_only=True)
+
+    class Meta:
+        model = TicketPurchase
+        fields = "__all__"
+        read_only_fields = [
+            "total_amount",
+            "idempotency_key",
+            "mp_preference_id",
+            "preference_init_point",
+            "preference_sandbox_init_point",
+            "mp_payment_id",
+            "status",
+            "status_detail",
+            "payment_method",
+            "payment_type",
+            "cash_movement",
+        ]
+
+    def get_graduate_name(self, obj):
+        return str(obj.graduate)
+
+
 class TaxTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = TaxType
+        fields = "__all__"
+
+
+class ServiceTypeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ServiceType
         fields = "__all__"
 
 
@@ -113,6 +284,7 @@ class CashMovementSerializer(serializers.ModelSerializer):
     account_name = serializers.CharField(source="account.name", read_only=True)
     code_name = serializers.CharField(source="code.name", read_only=True)
     code_code = serializers.CharField(source="code.code", read_only=True)
+    service_type_name = serializers.CharField(source="service_type.name", read_only=True)
     provider_name = serializers.CharField(source="provider.name", read_only=True)
     employee_name = serializers.SerializerMethodField()
     event_name = serializers.CharField(source="event.name", read_only=True)
@@ -206,3 +378,11 @@ class DashboardSerializer(serializers.Serializer):
     providers_with_credit = serializers.ListField()
     employee_pending = serializers.ListField()
     voided_count = serializers.IntegerField()
+
+
+class AuditLogEntrySerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source="user.username", read_only=True)
+
+    class Meta:
+        model = AuditLogEntry
+        fields = "__all__"

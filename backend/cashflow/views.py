@@ -4,12 +4,13 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.db.models import Q, Sum
 from django.contrib.auth import authenticate
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, SAFE_METHODS, BasePermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -17,6 +18,7 @@ from .filters import CashMovementFilter, ProviderLedgerEntryFilter, ReminderFilt
 from .models import (
     Account,
     AccountTransfer,
+    AuditLogEntry,
     CashMovement,
     Client,
     DailyAccountClose,
@@ -25,17 +27,28 @@ from .models import (
     EmployeePayment,
     EmployeeRole,
     Event,
+    EventBudget,
+    EventBudgetItem,
+    EventBudgetPayment,
+    EventBudgetPaymentWebhookLog,
     EventStaffAssignment,
+    Graduate,
+    GraduationEvent,
+    GraduationTicketPrice,
     MovementCode,
     Provider,
     ProviderLedgerEntry,
     Reminder,
+    ServiceType,
     TaxPayment,
+    TicketPurchase,
+    TicketPurchaseWebhookLog,
     TaxType,
 )
 from .serializers import (
     AccountSerializer,
     AccountTransferSerializer,
+    AuditLogEntrySerializer,
     CashMovementSerializer,
     ClientSerializer,
     DailyAccountCloseSerializer,
@@ -45,12 +58,20 @@ from .serializers import (
     EmployeeRoleSerializer,
     EmployeeSerializer,
     EventSerializer,
+    EventBudgetItemSerializer,
+    EventBudgetPaymentSerializer,
+    EventBudgetSerializer,
     EventStaffAssignmentSerializer,
+    GraduateSerializer,
+    GraduationEventSerializer,
+    GraduationTicketPriceSerializer,
     MovementCodeSerializer,
     ProviderLedgerEntrySerializer,
     ProviderSerializer,
     ReminderSerializer,
+    ServiceTypeSerializer,
     TaxPaymentSerializer,
+    TicketPurchaseSerializer,
     TaxTypeSerializer,
 )
 from .services import (
@@ -59,10 +80,30 @@ from .services import (
     close_daily_cash_group,
     create_account_transfer,
     create_balance_adjustment,
+    create_event_budget_payment_preference,
+    create_ticket_purchase_preference,
+    build_cash_movement_receipt_pdf,
+    build_mp_webhook_deduplication_key,
+    audit_log,
     get_dashboard_summary,
+    get_or_create_event_budget,
+    get_event_overview,
+    has_valid_mp_signature,
+    MercadoPagoAPIError,
+    MercadoPagoClient,
+    PaymentIntegrityError,
+    register_event_budget_item_manual_payment,
     register_employee_payment,
     register_provider_payment,
+    register_service_payment,
     register_tax_payment,
+    register_ticket_purchase_manual,
+    close_graduation_event,
+    create_graduation_ticket_price,
+    export_daily_account_close_csv,
+    export_graduation_event_csv,
+    sync_event_budget_payment,
+    sync_ticket_purchase_payment,
     void_cash_movement,
 )
 
@@ -89,7 +130,29 @@ def validation_error_response(exc):
     return Response({"detail": exc.messages if hasattr(exc, "messages") else str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
-class AccountViewSet(viewsets.ModelViewSet):
+class ReadOnlyOrStaff(BasePermission):
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
+            return bool(request.user and request.user.is_authenticated)
+        return bool(request.user and request.user.is_authenticated and request.user.is_staff)
+
+
+class AuditedModelViewSet(viewsets.ModelViewSet):
+    def perform_create(self, serializer):
+        obj = serializer.save()
+        audit_log(request_user_or_none(self.request), "create", obj)
+
+    def perform_update(self, serializer):
+        obj = serializer.save()
+        audit_log(request_user_or_none(self.request), "update", obj)
+
+    def perform_destroy(self, instance):
+        audit_log(request_user_or_none(self.request), "delete", instance)
+        super().perform_destroy(instance)
+
+
+class AccountViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = Account.objects.all()
     serializer_class = AccountSerializer
     search_fields = ["name", "notes"]
@@ -118,14 +181,16 @@ class AccountViewSet(viewsets.ModelViewSet):
         return Response(CashMovementSerializer(movement).data, status=status.HTTP_201_CREATED)
 
 
-class MovementCodeViewSet(viewsets.ModelViewSet):
+class MovementCodeViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = MovementCode.objects.all()
     serializer_class = MovementCodeSerializer
     search_fields = ["code", "name", "category"]
     ordering_fields = ["code", "name", "category"]
 
 
-class CashMovementViewSet(viewsets.ModelViewSet):
+class CashMovementViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = CashMovement.objects.select_related(
         "account",
         "code",
@@ -141,10 +206,12 @@ class CashMovementViewSet(viewsets.ModelViewSet):
     ordering_fields = ["date_payment", "amount", "created_at"]
 
     def perform_create(self, serializer):
-        serializer.save(created_by=request_user_or_none(self.request), updated_by=request_user_or_none(self.request))
+        obj = serializer.save(created_by=request_user_or_none(self.request), updated_by=request_user_or_none(self.request))
+        audit_log(request_user_or_none(self.request), "cash_movement_create", obj)
 
     def perform_update(self, serializer):
-        serializer.save(updated_by=request_user_or_none(self.request))
+        obj = serializer.save(updated_by=request_user_or_none(self.request))
+        audit_log(request_user_or_none(self.request), "cash_movement_update", obj)
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
@@ -156,10 +223,22 @@ class CashMovementViewSet(viewsets.ModelViewSet):
             )
         except ValidationError as exc:
             return validation_error_response(exc)
+        audit_log(request_user_or_none(request), "cash_movement_void", movement, request.data.get("reason", ""))
         return Response(CashMovementSerializer(movement).data)
 
+    @action(detail=True, methods=["get"])
+    def receipt(self, request, pk=None):
+        try:
+            content = build_cash_movement_receipt_pdf(self.get_object())
+        except ValidationError as exc:
+            return validation_error_response(exc)
+        response = HttpResponse(content, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="cash-movement-{pk}.pdf"'
+        return response
 
-class AccountTransferViewSet(viewsets.ModelViewSet):
+
+class AccountTransferViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = AccountTransfer.objects.select_related("from_account", "to_account")
     serializer_class = AccountTransferSerializer
     search_fields = ["description"]
@@ -178,10 +257,12 @@ class AccountTransferViewSet(viewsets.ModelViewSet):
             )
         except ValidationError as exc:
             return validation_error_response(exc)
+        audit_log(request_user_or_none(request), "account_transfer_create", transfer)
         return Response(self.get_serializer(transfer).data, status=status.HTTP_201_CREATED)
 
 
-class DailyCashCloseGroupViewSet(viewsets.ModelViewSet):
+class DailyCashCloseGroupViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = DailyCashCloseGroup.objects.prefetch_related("account_closes__account")
     serializer_class = DailyCashCloseGroupSerializer
     filterset_fields = ["date", "status"]
@@ -193,6 +274,7 @@ class DailyCashCloseGroupViewSet(viewsets.ModelViewSet):
                 close_date=parse_date(request.data.get("date"), timezone.localdate()),
                 declared_balances=request.data.get("declared_balances", {}),
                 notes=request.data.get("notes", ""),
+                user=request_user_or_none(request),
             )
         except ValidationError as exc:
             return validation_error_response(exc)
@@ -207,6 +289,7 @@ class DailyCashCloseGroupViewSet(viewsets.ModelViewSet):
                 close_date=parse_date(request.data.get("date"), timezone.localdate()),
                 declared_balance=request.data.get("declared_balance"),
                 notes=request.data.get("notes", ""),
+                user=request_user_or_none(request),
             )
         except ValidationError as exc:
             return validation_error_response(exc)
@@ -219,8 +302,16 @@ class DailyAccountCloseViewSet(viewsets.ReadOnlyModelViewSet):
     filterset_fields = ["close_group__date", "account", "account__currency"]
     ordering_fields = ["close_group__date", "account__name"]
 
+    @action(detail=True, methods=["get"])
+    def export(self, request, pk=None):
+        content = export_daily_account_close_csv(self.get_object())
+        response = HttpResponse(content, content_type="text/csv")
+        response["Content-Disposition"] = f'attachment; filename="daily-close-{pk}.csv"'
+        return response
 
-class ProviderViewSet(viewsets.ModelViewSet):
+
+class ProviderViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = Provider.objects.all()
     serializer_class = ProviderSerializer
     search_fields = ["name", "category", "cuit", "phone", "email"]
@@ -252,7 +343,8 @@ class ProviderViewSet(viewsets.ModelViewSet):
         return Response(ProviderLedgerEntrySerializer(entry).data, status=status.HTTP_201_CREATED)
 
 
-class ProviderLedgerEntryViewSet(viewsets.ModelViewSet):
+class ProviderLedgerEntryViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = ProviderLedgerEntry.objects.select_related("provider", "event", "cash_movement")
     serializer_class = ProviderLedgerEntrySerializer
     filterset_class = ProviderLedgerEntryFilter
@@ -260,36 +352,212 @@ class ProviderLedgerEntryViewSet(viewsets.ModelViewSet):
     ordering_fields = ["date", "amount", "created_at"]
 
 
-class EmployeeViewSet(viewsets.ModelViewSet):
+class EmployeeViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = Employee.objects.all()
     serializer_class = EmployeeSerializer
-    search_fields = ["first_name", "last_name", "alias", "phone", "document_number"]
+    search_fields = ["first_name", "last_name", "alias", "phone", "document_number", "email"]
     ordering_fields = ["last_name", "first_name", "alias"]
 
 
-class EmployeeRoleViewSet(viewsets.ModelViewSet):
+class EmployeeRoleViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = EmployeeRole.objects.all()
     serializer_class = EmployeeRoleSerializer
     search_fields = ["name"]
     ordering_fields = ["name"]
 
 
-class ClientViewSet(viewsets.ModelViewSet):
+class ClientViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = Client.objects.all()
     serializer_class = ClientSerializer
     search_fields = ["name", "phone", "email"]
     ordering_fields = ["name"]
 
 
-class EventViewSet(viewsets.ModelViewSet):
+class EventViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = Event.objects.select_related("client")
     serializer_class = EventSerializer
-    filterset_fields = ["status", "event_date", "client"]
-    search_fields = ["name", "event_type", "notes", "client__name"]
-    ordering_fields = ["event_date", "name", "status"]
+    filterset_fields = ["status", "event_date", "client", "event_type", "internal_status"]
+    search_fields = [
+        "name",
+        "event_type",
+        "notes",
+        "client__name",
+        "venue_space",
+        "contact_name",
+        "contact_phone",
+        "internal_status",
+    ]
+    ordering_fields = ["event_date", "event_time", "name", "status", "client__name"]
+
+    @action(detail=True, methods=["get"])
+    def overview(self, request, pk=None):
+        event = self.get_object()
+        overview = get_event_overview(event)
+        return Response(
+            {
+                "event": self.get_serializer(event).data,
+                "linked_counts": overview["linked_counts"],
+                "financial": overview["financial"],
+                "service_snapshot": overview["service_snapshot"],
+                "budget_summary": overview["budget_summary"],
+                "movements": CashMovementSerializer(event.cash_movements.select_related("account", "code", "provider", "employee", "event"), many=True).data,
+                "provider_entries": ProviderLedgerEntrySerializer(event.provider_ledger_entries.select_related("provider", "cash_movement"), many=True).data,
+                "staff_assignments": EventStaffAssignmentSerializer(event.staff_assignments.select_related("employee", "role"), many=True).data,
+                "employee_payments": EmployeePaymentSerializer(event.employee_payments.select_related("employee", "assignment", "cash_movement"), many=True).data,
+            }
+        )
+
+    @action(detail=True, methods=["get"], url_path="budget")
+    def budget(self, request, pk=None):
+        budget = get_or_create_event_budget(self.get_object())
+        return Response(EventBudgetSerializer(budget).data)
 
 
-class EventStaffAssignmentViewSet(viewsets.ModelViewSet):
+class EventBudgetViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
+    queryset = EventBudget.objects.select_related("event", "event__client")
+    serializer_class = EventBudgetSerializer
+    filterset_fields = ["event", "status"]
+    search_fields = ["event__name", "event__client__name", "notes", "optional_comments", "internal_notes"]
+    ordering_fields = ["updated_at", "created_at", "event__event_date"]
+
+
+class EventBudgetItemViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
+    queryset = EventBudgetItem.objects.select_related("budget", "budget__event")
+    serializer_class = EventBudgetItemSerializer
+    filterset_fields = ["budget", "budget__event", "category", "is_optional"]
+    search_fields = ["service_name", "category", "notes", "budget__event__name"]
+    ordering_fields = ["sort_order", "service_name", "total", "created_at"]
+
+    @action(detail=True, methods=["post"], url_path="pay-manual")
+    def pay_manual(self, request, pk=None):
+        try:
+            payment = register_event_budget_item_manual_payment(
+                budget_item=self.get_object(),
+                account=request.data.get("account"),
+                amount=request.data.get("amount"),
+                payment_date=parse_date(request.data.get("date"), timezone.localdate()),
+                payment_method=request.data.get("payment_method", "Manual"),
+                description=request.data.get("description", ""),
+                user=request_user_or_none(request),
+            )
+        except ValidationError as exc:
+            return validation_error_response(exc)
+        return Response(EventBudgetPaymentSerializer(payment).data, status=status.HTTP_201_CREATED)
+
+
+class EventBudgetPaymentViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = EventBudgetPayment.objects.select_related("budget", "budget__event", "cash_movement", "cash_movement__account")
+    serializer_class = EventBudgetPaymentSerializer
+    filterset_fields = ["budget", "budget__event", "status", "currency"]
+    search_fields = ["budget__event__name", "mp_preference_id", "mp_payment_id", "status_detail"]
+    ordering_fields = ["created_at", "updated_at", "amount", "status"]
+
+
+class EventBudgetPaymentPreferenceAPIView(APIView):
+    permission_classes = [ReadOnlyOrStaff]
+
+    def post(self, request):
+        budget = get_object_or_404(EventBudget, pk=request.data.get("budget"))
+        budget_item = request.data.get("budget_item")
+        try:
+            payment = create_event_budget_payment_preference(budget, budget_item=budget_item)
+        except ValidationError as exc:
+            return validation_error_response(exc)
+        except MercadoPagoAPIError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        payload = EventBudgetPaymentSerializer(payment).data
+        payload["preference_id"] = payment.mp_preference_id
+        payload["init_point"] = payment.preference_init_point or None
+        payload["sandbox_init_point"] = payment.preference_sandbox_init_point or None
+        return Response(payload, status=status.HTTP_201_CREATED)
+
+
+class EventBudgetPaymentWebhookAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        payload = request.data if isinstance(request.data, dict) else {}
+        topic = str(
+            request.query_params.get("type")
+            or request.query_params.get("topic")
+            or payload.get("type")
+            or payload.get("topic")
+            or ""
+        )
+        notification_id = str(
+            payload.get("id")
+            or request.query_params.get("id")
+            or request.query_params.get("data.id")
+            or (payload.get("data") or {}).get("id")
+            or "unknown"
+        )
+        payment_resource_id = request.query_params.get("data.id") or str((payload.get("data") or {}).get("id") or "")
+        if not payment_resource_id and topic == "payment":
+            payment_resource_id = str(request.query_params.get("id") or payload.get("id") or "")
+        deduplication_key = build_mp_webhook_deduplication_key(topic or "unknown", notification_id, payment_resource_id, payload)
+        webhook_log, created = EventBudgetPaymentWebhookLog.objects.get_or_create(
+            deduplication_key=deduplication_key,
+            defaults={"mp_notification_id": notification_id, "topic": topic or "unknown", "payload": payload},
+        )
+        if not created and webhook_log.processed:
+            return Response(status=status.HTTP_200_OK)
+        if not has_valid_mp_signature(request, payload):
+            webhook_log.error = "invalid_signature"
+            webhook_log.save(update_fields=["error"])
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        if topic != "payment":
+            webhook_log.processed = True
+            webhook_log.save(update_fields=["processed"])
+            return Response(status=status.HTTP_200_OK)
+        if not payment_resource_id:
+            webhook_log.error = "missing_payment_id"
+            webhook_log.save(update_fields=["error"])
+            return Response(status=status.HTTP_200_OK)
+        try:
+            payment_data = MercadoPagoClient().get_payment(str(payment_resource_id))
+            payment = self._find_payment(payment_data)
+            if payment is None:
+                webhook_log.error = "payment_not_found"
+                webhook_log.save(update_fields=["error"])
+                return Response(status=status.HTTP_200_OK)
+            sync_event_budget_payment(payment.id, payment_data)
+            webhook_log.processed = True
+            webhook_log.error = ""
+            webhook_log.save(update_fields=["processed", "error"])
+        except PaymentIntegrityError as exc:
+            if "payment" in locals():
+                EventBudgetPayment.objects.filter(pk=payment.pk).update(status_detail="integrity_validation_failed")
+            webhook_log.error = f"payment_integrity_error: {exc}"
+            webhook_log.processed = True
+            webhook_log.save(update_fields=["error", "processed"])
+        except MercadoPagoAPIError as exc:
+            webhook_log.error = str(exc)
+            webhook_log.save(update_fields=["error"])
+            return Response(status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response(status=status.HTTP_200_OK)
+
+    def _find_payment(self, payment_data):
+        external_reference = str(payment_data.get("external_reference") or "")
+        if external_reference.startswith("event-budget-payment:"):
+            return EventBudgetPayment.objects.filter(pk=external_reference.rsplit(":", 1)[-1]).first()
+        metadata = payment_data.get("metadata") or {}
+        payment_id = metadata.get("event_budget_payment_id")
+        if payment_id:
+            return EventBudgetPayment.objects.filter(pk=payment_id).first()
+        preference_id = str(metadata.get("preference_id") or "")
+        if preference_id:
+            return EventBudgetPayment.objects.filter(mp_preference_id=preference_id).first()
+        return None
+
+
+class EventStaffAssignmentViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = EventStaffAssignment.objects.select_related("event", "employee", "role")
     serializer_class = EventStaffAssignmentSerializer
     filterset_fields = ["event", "employee", "role", "status", "work_date"]
@@ -297,7 +565,8 @@ class EventStaffAssignmentViewSet(viewsets.ModelViewSet):
     ordering_fields = ["work_date", "total_amount", "status"]
 
 
-class EmployeePaymentViewSet(viewsets.ModelViewSet):
+class EmployeePaymentViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = EmployeePayment.objects.select_related("employee", "event", "assignment", "cash_movement")
     serializer_class = EmployeePaymentSerializer
     filterset_fields = ["employee", "event", "assignment", "payment_date"]
@@ -323,14 +592,289 @@ class EmployeePaymentViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(payment).data, status=status.HTTP_201_CREATED)
 
 
-class TaxTypeViewSet(viewsets.ModelViewSet):
+class GraduationEventViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
+    queryset = GraduationEvent.objects.select_related("event")
+    serializer_class = GraduationEventSerializer
+    filterset_fields = ["event", "active"]
+    search_fields = ["event__name", "event__client__name", "notes"]
+    ordering_fields = ["event__event_date", "price_per_ticket", "created_at"]
+
+    def perform_create(self, serializer):
+        obj = serializer.save()
+        create_graduation_ticket_price(obj, obj.price_per_ticket)
+        audit_log(request_user_or_none(self.request), "create", obj)
+
+    @action(detail=True, methods=["get"])
+    def graduates(self, request, pk=None):
+        rows = self.get_object().graduates.all()
+        search = str(request.query_params.get("search") or "").strip()
+        if search:
+            rows = rows.filter(Q(first_name__icontains=search) | Q(last_name__icontains=search))
+        return Response(GraduateSerializer(rows, many=True).data)
+
+    @action(detail=True, methods=["post"], url_path="ticket-price")
+    def ticket_price(self, request, pk=None):
+        try:
+            price = create_graduation_ticket_price(
+                self.get_object(),
+                request.data.get("price"),
+                parse_date(request.data.get("valid_from"), timezone.localdate().replace(day=1)),
+                request.data.get("notes", ""),
+            )
+        except ValidationError as exc:
+            return validation_error_response(exc)
+        audit_log(request_user_or_none(request), "graduation_ticket_price", price)
+        return Response(GraduationTicketPriceSerializer(price).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"])
+    def close(self, request, pk=None):
+        try:
+            event = close_graduation_event(self.get_object(), request_user_or_none(request))
+        except ValidationError as exc:
+            return validation_error_response(exc)
+        return Response(self.get_serializer(event).data)
+
+    @action(detail=True, methods=["get"])
+    def export(self, request, pk=None):
+        content = export_graduation_event_csv(self.get_object())
+        response = HttpResponse(content, content_type="text/csv")
+        response["Content-Disposition"] = f'attachment; filename="graduation-event-{pk}.csv"'
+        return response
+
+
+class GraduateViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
+    queryset = Graduate.objects.select_related("graduation_event", "graduation_event__event")
+    serializer_class = GraduateSerializer
+    filterset_fields = ["graduation_event"]
+    search_fields = ["first_name", "last_name", "notes", "graduation_event__event__name"]
+    ordering_fields = ["last_name", "first_name", "created_at"]
+
+    def perform_create(self, serializer):
+        graduation_event = serializer.validated_data["graduation_event"]
+        if graduation_event.closed_at:
+            raise ValidationError("La lista de egresados ya esta cerrada.")
+        super().perform_create(serializer)
+
+    def perform_update(self, serializer):
+        graduation_event = serializer.instance.graduation_event
+        if graduation_event.closed_at:
+            raise ValidationError("La lista de egresados ya esta cerrada.")
+        super().perform_update(serializer)
+
+
+class TicketPurchaseViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
+    queryset = TicketPurchase.objects.select_related("graduation_event", "graduation_event__event", "graduate", "cash_movement", "cash_movement__account")
+    serializer_class = TicketPurchaseSerializer
+    filterset_fields = ["graduation_event", "graduate", "status"]
+    search_fields = ["email", "graduate__first_name", "graduate__last_name", "graduation_event__event__name", "mp_preference_id", "mp_payment_id"]
+    ordering_fields = ["created_at", "total_amount", "status"]
+
+
+class GraduationTicketPriceViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
+    queryset = GraduationTicketPrice.objects.select_related("graduation_event", "graduation_event__event")
+    serializer_class = GraduationTicketPriceSerializer
+    filterset_fields = ["graduation_event", "valid_from"]
+    search_fields = ["graduation_event__event__name", "notes"]
+    ordering_fields = ["valid_from", "price"]
+
+
+class GraduationEventPublicAPIView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, token):
+        graduation_event = get_object_or_404(GraduationEvent.objects.select_related("event"), public_token=token, active=True)
+        return Response(
+            {
+                "id": graduation_event.id,
+                "event_name": graduation_event.event.name,
+                "event_date": graduation_event.event.event_date,
+                "price_per_ticket": graduation_event.current_ticket_price(),
+                "current_price": graduation_event.current_ticket_price(),
+                "capacity": graduation_event.capacity,
+                "max_tickets_per_graduate": graduation_event.max_tickets_per_graduate,
+            }
+        )
+
+
+class GraduationEventGraduateSearchAPIView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, token):
+        graduation_event = get_object_or_404(GraduationEvent, public_token=token, active=True)
+        search = str(request.query_params.get("search") or "").strip()
+        rows = graduation_event.graduates.all()
+        if search:
+            rows = rows.filter(Q(first_name__icontains=search) | Q(last_name__icontains=search))
+        return Response(GraduateSerializer(rows[:20], many=True).data)
+
+
+class TicketPurchasePreferenceAPIView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        graduation_event = get_object_or_404(GraduationEvent, public_token=request.data.get("token"), active=True)
+        try:
+            purchase = create_ticket_purchase_preference(
+                graduation_event=graduation_event,
+                graduate=request.data.get("graduate"),
+                quantity=request.data.get("quantity"),
+                email=request.data.get("email"),
+            )
+        except ValidationError as exc:
+            return validation_error_response(exc)
+        except MercadoPagoAPIError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        payload = TicketPurchaseSerializer(purchase).data
+        payload["preference_id"] = purchase.mp_preference_id
+        payload["init_point"] = purchase.preference_init_point or None
+        payload["sandbox_init_point"] = purchase.preference_sandbox_init_point or None
+        return Response(payload, status=status.HTTP_201_CREATED)
+
+
+class TicketPurchaseManualAPIView(APIView):
+    permission_classes = [ReadOnlyOrStaff]
+
+    def post(self, request):
+        graduation_event = get_object_or_404(GraduationEvent, pk=request.data.get("graduation_event"))
+        try:
+            purchase = register_ticket_purchase_manual(
+                graduation_event=graduation_event,
+                graduate=request.data.get("graduate"),
+                quantity=request.data.get("quantity"),
+                account=request.data.get("account"),
+                email=request.data.get("email", ""),
+                payment_date=parse_date(request.data.get("payment_date"), timezone.localdate()),
+                payment_method=request.data.get("payment_method", "Efectivo"),
+                user=request_user_or_none(request),
+            )
+        except ValidationError as exc:
+            return validation_error_response(exc)
+        return Response(TicketPurchaseSerializer(purchase).data, status=status.HTTP_201_CREATED)
+
+
+class TicketPurchaseWebhookAPIView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        payload = request.data if isinstance(request.data, dict) else {}
+        topic = str(
+            request.query_params.get("type")
+            or request.query_params.get("topic")
+            or payload.get("type")
+            or payload.get("topic")
+            or ""
+        )
+        notification_id = str(
+            payload.get("id")
+            or request.query_params.get("id")
+            or request.query_params.get("data.id")
+            or (payload.get("data") or {}).get("id")
+            or "unknown"
+        )
+        payment_resource_id = request.query_params.get("data.id") or str((payload.get("data") or {}).get("id") or "")
+        if not payment_resource_id and topic == "payment":
+            payment_resource_id = str(request.query_params.get("id") or payload.get("id") or "")
+        deduplication_key = build_mp_webhook_deduplication_key(topic or "unknown", notification_id, payment_resource_id, payload)
+        webhook_log, created = TicketPurchaseWebhookLog.objects.get_or_create(
+            deduplication_key=deduplication_key,
+            defaults={"mp_notification_id": notification_id, "topic": topic or "unknown", "payload": payload},
+        )
+        if not created and webhook_log.processed:
+            return Response(status=status.HTTP_200_OK)
+        if not has_valid_mp_signature(request, payload):
+            webhook_log.error = "invalid_signature"
+            webhook_log.save(update_fields=["error"])
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        if topic != "payment":
+            webhook_log.processed = True
+            webhook_log.save(update_fields=["processed"])
+            return Response(status=status.HTTP_200_OK)
+        if not payment_resource_id:
+            webhook_log.error = "missing_payment_id"
+            webhook_log.save(update_fields=["error"])
+            return Response(status=status.HTTP_200_OK)
+        try:
+            payment_data = MercadoPagoClient().get_payment(str(payment_resource_id))
+            purchase = self._find_purchase(payment_data)
+            if purchase is None:
+                webhook_log.error = "purchase_not_found"
+                webhook_log.save(update_fields=["error"])
+                return Response(status=status.HTTP_200_OK)
+            sync_ticket_purchase_payment(purchase.id, payment_data)
+            webhook_log.processed = True
+            webhook_log.error = ""
+            webhook_log.save(update_fields=["processed", "error"])
+        except PaymentIntegrityError as exc:
+            if "purchase" in locals():
+                TicketPurchase.objects.filter(pk=purchase.pk).update(status_detail="integrity_validation_failed")
+            webhook_log.error = f"payment_integrity_error: {exc}"
+            webhook_log.processed = True
+            webhook_log.save(update_fields=["error", "processed"])
+        except MercadoPagoAPIError as exc:
+            webhook_log.error = str(exc)
+            webhook_log.save(update_fields=["error"])
+            return Response(status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response(status=status.HTTP_200_OK)
+
+    def _find_purchase(self, payment_data):
+        external_reference = str(payment_data.get("external_reference") or "")
+        if external_reference.startswith("ticket-purchase:"):
+            return TicketPurchase.objects.filter(pk=external_reference.rsplit(":", 1)[-1]).first()
+        metadata = payment_data.get("metadata") or {}
+        purchase_id = metadata.get("ticket_purchase_id")
+        if purchase_id:
+            return TicketPurchase.objects.filter(pk=purchase_id).first()
+        preference_id = str(metadata.get("preference_id") or "")
+        if preference_id:
+            return TicketPurchase.objects.filter(mp_preference_id=preference_id).first()
+        return None
+
+
+class TaxTypeViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = TaxType.objects.all()
     serializer_class = TaxTypeSerializer
     search_fields = ["name", "description"]
     ordering_fields = ["name"]
 
 
-class TaxPaymentViewSet(viewsets.ModelViewSet):
+class ServiceTypeViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
+    queryset = ServiceType.objects.all()
+    serializer_class = ServiceTypeSerializer
+    search_fields = ["name", "description"]
+    ordering_fields = ["name"]
+
+
+class ServicePaymentAPIView(APIView):
+    permission_classes = [ReadOnlyOrStaff]
+
+    def post(self, request):
+        try:
+            movement = register_service_payment(
+                service_type=request.data.get("service_type"),
+                account=request.data.get("account"),
+                amount=request.data.get("amount"),
+                payment_date=parse_date(request.data.get("payment_date"), timezone.localdate()),
+                description=request.data.get("description", ""),
+                payment_method=request.data.get("payment_method", ""),
+                user=request_user_or_none(request),
+            )
+        except ValidationError as exc:
+            return validation_error_response(exc)
+        return Response(CashMovementSerializer(movement).data, status=status.HTTP_201_CREATED)
+
+
+class TaxPaymentViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = TaxPayment.objects.select_related("tax_type", "account", "cash_movement")
     serializer_class = TaxPaymentSerializer
     filterset_fields = ["tax_type", "account", "payment_date", "period"]
@@ -357,7 +901,8 @@ class TaxPaymentViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(tax_payment).data, status=status.HTTP_201_CREATED)
 
 
-class ReminderViewSet(viewsets.ModelViewSet):
+class ReminderViewSet(AuditedModelViewSet):
+    permission_classes = [ReadOnlyOrStaff]
     queryset = Reminder.objects.select_related("related_tax_payment__tax_type", "related_event", "related_provider")
     serializer_class = ReminderSerializer
     filterset_class = ReminderFilter
@@ -370,7 +915,16 @@ class ReminderViewSet(viewsets.ModelViewSet):
         reminder.status = Reminder.Status.DONE
         reminder.completed_at = timezone.now()
         reminder.save(update_fields=["status", "completed_at", "updated_at"])
+        audit_log(request_user_or_none(request), "reminder_complete", reminder)
         return Response(self.get_serializer(reminder).data)
+
+
+class AuditLogEntryViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = AuditLogEntry.objects.select_related("user")
+    serializer_class = AuditLogEntrySerializer
+    filterset_fields = ["user", "model_name", "action"]
+    search_fields = ["action", "model_name", "object_id", "detail", "user__username"]
+    ordering_fields = ["created_at", "action", "model_name"]
 
 
 class DashboardAPIView(APIView):
