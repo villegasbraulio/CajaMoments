@@ -213,6 +213,11 @@ class GraduationEventSerializer(serializers.ModelSerializer):
     def get_current_price(self, obj):
         return obj.current_ticket_price()
 
+    def validate_event(self, event):
+        if event.event_type != Event.Type.EGRESADOS:
+            raise serializers.ValidationError("Solo se pueden usar eventos de tipo Egresados.")
+        return event
+
 
 class GraduationTicketPriceSerializer(serializers.ModelSerializer):
     event_name = serializers.CharField(source="graduation_event.event.name", read_only=True)

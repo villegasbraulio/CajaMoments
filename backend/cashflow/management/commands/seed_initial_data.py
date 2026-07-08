@@ -114,7 +114,7 @@ class Command(BaseCommand):
             name="Evento ejemplo",
             defaults={
                 "client": client,
-                "event_type": "Cumpleanos",
+                "event_type": Event.Type.QUINCE,
                 "event_date": timezone.localdate(),
                 "status": Event.Status.CONFIRMED,
             },

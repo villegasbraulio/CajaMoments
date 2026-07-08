@@ -14,6 +14,9 @@ import {
   DialogTitle,
   Drawer,
   Fade,
+  Grid,
+  IconButton,
+  LinearProgress,
   List,
   ListItemButton,
   ListItemText,
@@ -31,7 +34,10 @@ import {
   Toolbar,
   Typography,
   createTheme,
+  useMediaQuery,
 } from "@mui/material";
+import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
+import MenuIcon from "@mui/icons-material/Menu";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api";
 const TOKEN_STORAGE_KEY = "cajaMomentsAuthToken";
@@ -84,12 +90,41 @@ const eventStatusOptions = [
   { id: "CANCELLED", name: "Cancelado" },
 ];
 
+const eventTypeOptions = [
+  { id: "QUINCE", name: "Cumpleaños de 15" },
+  { id: "EGRESADOS", name: "Egresados" },
+  { id: "EVENTO_PRIVADO", name: "Evento privado" },
+  { id: "CASAMIENTO", name: "Casamiento" },
+];
+
 const budgetStatusOptions = [
   { id: "DRAFT", name: "Borrador" },
   { id: "SENT", name: "Enviado" },
   { id: "APPROVED", name: "Aprobado" },
   { id: "CANCELLED", name: "Cancelado" },
 ];
+
+function eventTypeId(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  const legacy = {
+    boda: "CASAMIENTO",
+    casamiento: "CASAMIENTO",
+    cumple: "QUINCE",
+    cumpleanos: "QUINCE",
+    cumpleaños: "QUINCE",
+    "cumpleanos de 15": "QUINCE",
+    "cumpleaños de 15": "QUINCE",
+    egresados: "EGRESADOS",
+    social: "EVENTO_PRIVADO",
+    corporativo: "EVENTO_PRIVADO",
+    "evento privado": "EVENTO_PRIVADO",
+  };
+  return eventTypeOptions.some((option) => option.id === value) ? value : legacy[normalized] || "EVENTO_PRIVADO";
+}
+
+function eventTypeName(value) {
+  return eventTypeOptions.find((option) => option.id === eventTypeId(value))?.name || "Evento privado";
+}
 
 function todayISO() {
   return new Date().toLocaleDateString("sv-SE");
@@ -255,8 +290,9 @@ function AlertLine({ status }) {
 }
 
 function ActionDialog({ open, title, onClose, children, maxWidth = "md" }) {
+  const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth={maxWidth}>
+    <Dialog open={open} onClose={onClose} fullScreen={fullScreen} fullWidth maxWidth={maxWidth}>
       <DialogTitle>{title}</DialogTitle>
       <DialogContent dividers>{children}</DialogContent>
       <DialogActions>
@@ -270,12 +306,12 @@ function ActionCard({ title, subtitle, children }) {
   return (
     <Card className="work-card">
       <CardContent>
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems={{ sm: "center" }} justifyContent="space-between">
-          <Box>
+        <Stack className="action-card-content" direction={{ xs: "column", sm: "row" }} spacing={2}>
+          <Box sx={{ flex: 1, minWidth: 0 }}>
             <Typography variant="h6">{title}</Typography>
             {subtitle ? <Typography variant="body2" color="text.secondary">{subtitle}</Typography> : null}
           </Box>
-          <Stack direction="row" spacing={1} flexWrap="wrap">{children}</Stack>
+          <Stack className="action-card-actions" direction="row" spacing={1} flexWrap="wrap">{children}</Stack>
         </Stack>
       </CardContent>
     </Card>
@@ -367,7 +403,7 @@ function emptyEventForm() {
     client_email: "",
     client_notes: "",
     name: "",
-    event_type: "",
+    event_type: "EVENTO_PRIVADO",
     amount: "",
     event_date: todayISO(),
     event_time: "",
@@ -400,7 +436,7 @@ function normalizeEventForForm(event) {
     client_email: event.client_email || "",
     client_notes: event.client_notes || "",
     name: event.name || "",
-    event_type: event.event_type || "",
+    event_type: eventTypeId(event.event_type),
     amount: "",
     event_date: event.event_date || todayISO(),
     event_time: event.event_time ? String(event.event_time).slice(0, 5) : "",
@@ -462,6 +498,10 @@ function emptyBudgetItemForm() {
 
 function AppContent() {
   const [active, setActive] = useState("dashboard");
+  const isDesktop = useMediaQuery(theme.breakpoints.up("md"));
+  const [drawerOpen, setDrawerOpen] = useState(() => (
+    typeof window === "undefined" ? true : window.matchMedia("(min-width:900px)").matches
+  ));
   const [authToken, setAuthToken] = useState(() => localStorage.getItem(TOKEN_STORAGE_KEY));
   const [currentUser, setCurrentUser] = useState(null);
   const [booting, setBooting] = useState(true);
@@ -546,6 +586,10 @@ function AppContent() {
   useEffect(() => {
     loadSession();
   }, []);
+
+  useEffect(() => {
+    setDrawerOpen(isDesktop);
+  }, [isDesktop]);
 
   useEffect(() => {
     if (!authToken) {
@@ -650,6 +694,11 @@ function AppContent() {
     );
   }
 
+  function navigateTo(key) {
+    setActive(key);
+    if (!isDesktop) setDrawerOpen(false);
+  }
+
   const publicGraduationMatch = window.location.pathname.match(/^\/egresados\/([^/]+)\/?/);
   if (publicGraduationMatch) {
     return <PublicGraduationPage token={publicGraduationMatch[1]} />;
@@ -680,9 +729,12 @@ function AppContent() {
   return (
     <Box sx={{ display: "flex", minHeight: "100vh", bgcolor: "background.default" }}>
       <Drawer
-        variant="permanent"
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        variant={isDesktop ? "persistent" : "temporary"}
+        ModalProps={{ keepMounted: true }}
         sx={{
-          width: drawerWidth,
+          width: isDesktop && drawerOpen ? drawerWidth : 0,
           flexShrink: 0,
           "& .MuiDrawer-paper": {
             width: drawerWidth,
@@ -690,11 +742,21 @@ function AppContent() {
             border: 0,
             bgcolor: "#132326",
             color: "#f8fbfa",
+            maxWidth: "86vw",
           },
         }}
       >
         <Box sx={{ p: 2.5 }}>
-          <Chip label="Backoffice" size="small" sx={{ bgcolor: "rgba(255,255,255,0.12)", color: "white", mb: 2 }} />
+          <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ mb: 2 }}>
+            <Chip label="Backoffice" size="small" sx={{ bgcolor: "rgba(255,255,255,0.12)", color: "white" }} />
+            <IconButton
+              onClick={() => setDrawerOpen(false)}
+              sx={{ color: "white" }}
+              aria-label="Replegar menu"
+            >
+              <ChevronLeftIcon fontSize="small" />
+            </IconButton>
+          </Stack>
           <Typography variant="h5">Caja Moments</Typography>
           <Typography variant="body2" sx={{ color: "rgba(255,255,255,0.64)", mt: 0.75 }}>Eventos, caja y operaciones.</Typography>
         </Box>
@@ -703,7 +765,7 @@ function AppContent() {
             <ListItemButton
               key={key}
               selected={active === key}
-              onClick={() => setActive(key)}
+              onClick={() => navigateTo(key)}
               sx={{
                 borderRadius: 2,
                 mb: 0.5,
@@ -719,9 +781,17 @@ function AppContent() {
       </Drawer>
       <Box component="main" sx={{ flexGrow: 1, minWidth: 0 }}>
         <AppBar position="sticky" color="inherit" elevation={0} sx={{ borderBottom: "1px solid rgba(23,33,27,0.08)", backdropFilter: "blur(14px)" }}>
-          <Toolbar sx={{ justifyContent: "space-between" }}>
-            <Typography variant="body2" color="text.secondary">Sesion: <strong>{currentUser.username}</strong></Typography>
-            <Button variant="outlined" color="primary" onClick={handleLogout}>Cerrar sesion</Button>
+          <Toolbar sx={{ justifyContent: "space-between", gap: 1, flexWrap: { xs: "wrap", sm: "nowrap" }, py: { xs: 1, sm: 0 } }}>
+            <Stack direction="row" alignItems="center" spacing={1} sx={{ minWidth: 0 }}>
+              <IconButton
+                onClick={() => setDrawerOpen((value) => !value)}
+                aria-label={drawerOpen ? "Replegar menu" : "Abrir menu"}
+              >
+                <MenuIcon />
+              </IconButton>
+              <Typography variant="body2" color="text.secondary" noWrap>Sesion: <strong>{currentUser.username}</strong></Typography>
+            </Stack>
+            <Button variant="outlined" color="primary" onClick={handleLogout} sx={{ flexShrink: 0 }}>Cerrar sesion</Button>
           </Toolbar>
         </AppBar>
         <Fade in key={active} timeout={220}>
@@ -784,24 +854,109 @@ function LoginScreen({ onLogin, status }) {
 function PageHeader({ title, kicker, children, actions }) {
   return (
     <Card className="hero-card">
-      <CardContent>
-        <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" alignItems={{ xs: "flex-start", md: "center" }} spacing={2}>
-          <Box>
-            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
-              <Chip label={kicker} size="small" color="primary" variant="outlined" />
-            </Stack>
-            <Typography variant="h4">{title}</Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>{children}</Typography>
-          </Box>
-          {actions ? <Stack direction="row" spacing={1} sx={{ flexShrink: 0 }}>{actions}</Stack> : null}
-        </Stack>
+      <CardContent className="page-header-content">
+        <Box sx={{ minWidth: 0 }}>
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+            <Chip label={kicker} size="small" color="primary" variant="outlined" />
+          </Stack>
+          <Typography variant="h4">{title}</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>{children}</Typography>
+        </Box>
+        {actions ? <Stack className="page-header-actions" direction="row" spacing={1}>{actions}</Stack> : null}
       </CardContent>
     </Card>
   );
 }
 
+function numberValue(value) {
+  return Number(value || 0);
+}
+
+function DashboardMetric({ label, value, children }) {
+  return (
+    <Card sx={{ height: "100%" }}>
+      <CardContent>
+        <Typography variant="body2" color="text.secondary">{label}</Typography>
+        <Typography variant="h5" sx={{ mt: 1, overflowWrap: "anywhere" }}>{value}</Typography>
+        {children}
+      </CardContent>
+    </Card>
+  );
+}
+
+function DashboardPanel({ title, children, action }) {
+  return (
+    <Card sx={{ height: "100%" }}>
+      <CardContent>
+        <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ mb: 2 }}>
+          <Typography variant="h6">{title}</Typography>
+          {action}
+        </Stack>
+        {children}
+      </CardContent>
+    </Card>
+  );
+}
+
+function BarListChart({ rows, labelFor, valueFor, currency = "ARS" }) {
+  const max = Math.max(...rows.map((row) => Math.abs(numberValue(valueFor(row)))), 0);
+  if (!rows.length) return <Typography color="text.secondary">Sin datos para graficar.</Typography>;
+  return (
+    <Stack spacing={1.5}>
+      {rows.map((row, index) => {
+        const value = numberValue(valueFor(row));
+        const width = max ? `${Math.max(4, (Math.abs(value) / max) * 100)}%` : "4%";
+        return (
+          <Box key={row.id || row.account_id || row.currency || index}>
+            <Stack direction="row" justifyContent="space-between" spacing={1}>
+              <Typography variant="body2" noWrap>{labelFor(row)}</Typography>
+              <Typography variant="body2" fontWeight={700}>{money(value, row.currency || currency)}</Typography>
+            </Stack>
+            <Box sx={{ height: 9, mt: 0.75, borderRadius: 999, bgcolor: "rgba(36,92,99,0.10)", overflow: "hidden" }}>
+              <Box sx={{ width, height: "100%", borderRadius: 999, bgcolor: value < 0 ? "secondary.main" : "primary.main" }} />
+            </Box>
+          </Box>
+        );
+      })}
+    </Stack>
+  );
+}
+
+function FlowChart({ income, expense }) {
+  const items = [
+    { label: "Ingresos", value: numberValue(income), color: theme.palette.primary.main },
+    { label: "Egresos", value: numberValue(expense), color: theme.palette.secondary.main },
+  ];
+  const max = Math.max(...items.map((item) => item.value), 1);
+  return (
+    <Box component="svg" viewBox="0 0 360 140" role="img" aria-label="Ingresos y egresos de hoy" sx={{ width: "100%", height: 160 }}>
+      {items.map((item, index) => {
+        const width = (item.value / max) * 250;
+        const y = 28 + index * 58;
+        return (
+          <g key={item.label}>
+            <text x="0" y={y + 16} fill={theme.palette.text.secondary} fontSize="13">{item.label}</text>
+            <rect x="78" y={y} width="250" height="24" rx="12" fill="rgba(23,33,27,0.08)" />
+            <rect x="78" y={y} width={width} height="24" rx="12" fill={item.color} />
+            <text x="340" y={y + 16} textAnchor="end" fill={theme.palette.text.primary} fontSize="13" fontWeight="700">
+              {thousands(item.value)}
+            </text>
+          </g>
+        );
+      })}
+    </Box>
+  );
+}
+
 function Dashboard({ reloadKey }) {
   const [summary, setSummary] = useState(null);
+  const accounts = summary?.accounts || [];
+  const balancesByCurrency = summary?.balances_by_currency || [];
+  const pendingCloses = summary?.pending_account_closes || [];
+  const closeDifferences = summary?.today_close_differences || [];
+  const reminders = summary?.pending_reminders || [];
+  const providersWithCredit = summary?.providers_with_credit || [];
+  const employeePending = summary?.employee_pending || [];
 
   useEffect(() => {
     api("/dashboard/")
@@ -814,49 +969,41 @@ function Dashboard({ reloadKey }) {
       <PageHeader title="Tablero operativo" kicker="Hoy">
         Vista ejecutiva del dia: saldos por moneda, pendientes de cierre, diferencias, proveedores con saldo a favor y alertas operativas.
       </PageHeader>
-      <div className="row g-3 mb-3">
-        {(summary?.balances_by_currency || []).map((item) => (
-          <div className="col-md-4" key={item.currency}>
-            <div className="metric-card h-100">
-              <span className="text-muted small">Saldo total por moneda</span>
-              <h5 className="mt-2 mb-1">{item.currency}</h5>
-              <strong>{money(item.balance, item.currency)}</strong>
-            </div>
-          </div>
+      {!summary ? <LinearProgress sx={{ mb: 2 }} /> : null}
+      <Grid container spacing={2}>
+        {balancesByCurrency.map((item) => (
+          <Grid item xs={12} md={4} key={item.currency}>
+            <DashboardMetric label="Saldo total por moneda" value={money(item.balance, item.currency)}>
+              <Chip label={item.currency} size="small" variant="outlined" sx={{ mt: 1.5 }} />
+            </DashboardMetric>
+          </Grid>
         ))}
-      </div>
-      <div className="row g-3 mt-1">
-        <div className="col-md-3">
-          <div className="metric-card">
-            <span className="text-muted small">Ingresos de hoy</span>
-            <strong className="d-block">{money(summary?.today_income)}</strong>
-          </div>
-        </div>
-        <div className="col-md-3">
-          <div className="metric-card">
-            <span className="text-muted small">Egresos de hoy</span>
-            <strong className="d-block">{money(summary?.today_expense)}</strong>
-          </div>
-        </div>
-        <div className="col-md-3">
-          <div className="metric-card">
-            <span className="text-muted small">Cierres pendientes</span>
-            <strong className="d-block">{summary?.pending_account_closes?.length || 0}</strong>
-          </div>
-        </div>
-        <div className="col-md-3">
-          <div className="metric-card">
-            <span className="text-muted small">Movimientos anulados</span>
-            <strong className="d-block">{summary?.voided_count || 0}</strong>
-          </div>
-        </div>
-      </div>
-      <div className="row g-3 mt-1">
-        <div className="col-lg-7">
-          <div className="work-card h-100">
-            <h4 className="section-title">Saldos por cuenta</h4>
+        <Grid item xs={12} sm={6} lg={3}>
+          <DashboardMetric label="Ingresos de hoy" value={money(summary?.today_income)} />
+        </Grid>
+        <Grid item xs={12} sm={6} lg={3}>
+          <DashboardMetric label="Egresos de hoy" value={money(summary?.today_expense)} />
+        </Grid>
+        <Grid item xs={12} sm={6} lg={3}>
+          <DashboardMetric label="Cierres pendientes" value={pendingCloses.length} />
+        </Grid>
+        <Grid item xs={12} sm={6} lg={3}>
+          <DashboardMetric label="Movimientos anulados" value={summary?.voided_count || 0} />
+        </Grid>
+        <Grid item xs={12} lg={5}>
+          <DashboardPanel title="Flujo del dia" action={<Chip label={formatDate(summary?.date)} size="small" />}>
+            <FlowChart income={summary?.today_income} expense={summary?.today_expense} />
+          </DashboardPanel>
+        </Grid>
+        <Grid item xs={12} lg={7}>
+          <DashboardPanel title="Saldos por cuenta">
+            <BarListChart rows={accounts} labelFor={(row) => row.name} valueFor={(row) => row.balance} />
+          </DashboardPanel>
+        </Grid>
+        <Grid item xs={12} lg={7}>
+          <DashboardPanel title="Detalle de cuentas">
             <SimpleTable
-              rows={summary?.accounts || []}
+              rows={accounts}
               columns={[
                 ["name", "Cuenta"],
                 ["type", "Tipo"],
@@ -864,28 +1011,24 @@ function Dashboard({ reloadKey }) {
                 [(row) => money(row.balance, row.currency), "Saldo"],
               ]}
             />
-          </div>
-        </div>
-        <div className="col-lg-5">
-          <div className="work-card h-100">
-            <h4 className="section-title">Cierres pendientes del dia</h4>
+          </DashboardPanel>
+        </Grid>
+        <Grid item xs={12} lg={5}>
+          <DashboardPanel title="Cierres pendientes del dia">
             <SimpleTable
-              rows={summary?.pending_account_closes || []}
+              rows={pendingCloses}
               columns={[
                 ["account_name", "Cuenta"],
                 ["currency", "Moneda"],
                 [(row) => money(row.balance, row.currency), "Saldo actual"],
               ]}
             />
-          </div>
-        </div>
-      </div>
-      <div className="row g-3 mt-1">
-        <div className="col-lg-6">
-          <div className="work-card h-100">
-            <h4 className="section-title">Diferencias de caja del dia</h4>
+          </DashboardPanel>
+        </Grid>
+        <Grid item xs={12} lg={6}>
+          <DashboardPanel title="Diferencias de caja del dia">
             <SimpleTable
-              rows={summary?.today_close_differences || []}
+              rows={closeDifferences}
               columns={[
                 ["account_name", "Cuenta"],
                 [(row) => money(row.calculated_balance, row.currency), "Calculado"],
@@ -893,13 +1036,12 @@ function Dashboard({ reloadKey }) {
                 [(row) => money(row.difference, row.currency), "Diferencia"],
               ]}
             />
-          </div>
-        </div>
-        <div className="col-lg-6">
-          <div className="work-card h-100">
-            <h4 className="section-title">Recordatorios de impuestos y vencimientos</h4>
+          </DashboardPanel>
+        </Grid>
+        <Grid item xs={12} lg={6}>
+          <DashboardPanel title="Recordatorios de impuestos y vencimientos">
             <SimpleTable
-              rows={summary?.pending_reminders || []}
+              rows={reminders}
               columns={[
                 [(row) => formatDate(row.due_date), "Vence"],
                 ["title", "Titulo"],
@@ -907,27 +1049,23 @@ function Dashboard({ reloadKey }) {
                 ["status", "Estado"],
               ]}
             />
-          </div>
-        </div>
-      </div>
-      <div className="row g-3 mt-1">
-        <div className="col-lg-6">
-          <div className="work-card h-100">
-            <h4 className="section-title">Proveedores con saldo a favor</h4>
+          </DashboardPanel>
+        </Grid>
+        <Grid item xs={12} lg={6}>
+          <DashboardPanel title="Proveedores con saldo a favor">
             <SimpleTable
-              rows={summary?.providers_with_credit || []}
+              rows={providersWithCredit}
               columns={[
                 ["provider_name", "Proveedor"],
                 [(row) => money(row.balance), "Saldo a favor"],
               ]}
             />
-          </div>
-        </div>
-        <div className="col-lg-6">
-          <div className="work-card h-100">
-            <h4 className="section-title">Personal pendiente de pago</h4>
+          </DashboardPanel>
+        </Grid>
+        <Grid item xs={12} lg={6}>
+          <DashboardPanel title="Personal pendiente de pago">
             <SimpleTable
-              rows={summary?.employee_pending || []}
+              rows={employeePending}
               columns={[
                 ["employee_name", "Empleado"],
                 ["event_name", "Evento"],
@@ -935,9 +1073,9 @@ function Dashboard({ reloadKey }) {
                 [(row) => money(row.pending_amount), "Pendiente"],
               ]}
             />
-          </div>
-        </div>
-      </div>
+          </DashboardPanel>
+        </Grid>
+      </Grid>
     </>
   );
 }
@@ -1076,14 +1214,15 @@ function DailyCash({ refs, mutate, reloadKey }) {
 
   return (
     <>
-      <PageHeader title="Caja diaria" kicker="Libro mayor">
+      <PageHeader
+        title="Caja diaria"
+        kicker="Libro mayor"
+        actions={<Button onClick={() => setCashDialogs({ ...cashDialogs, create: true })}>Nuevo movimiento</Button>}
+      >
         Carga ingresos y egresos reales, revisa rapido el resumen filtrado y exporta el movimiento diario cuando necesites compartirlo.
       </PageHeader>
       <div className="row g-3">
         <div className="col-xl-4">
-          <ActionCard title="Caja diaria" subtitle="Carga movimientos en una ventana y revisa el libro filtrado.">
-            <Button onClick={() => setCashDialogs({ ...cashDialogs, create: true })}>Nuevo movimiento</Button>
-          </ActionCard>
           <ActionDialog open={cashDialogs.create} title="Nuevo movimiento de caja" onClose={() => setCashDialogs({ ...cashDialogs, create: false })}>
           <form className="work-card" onSubmit={submit}>
             <h4 className="section-title">Nuevo movimiento</h4>
@@ -1234,15 +1373,18 @@ function AccountsScreen({ refs, mutate }) {
 
   return (
     <>
-      <PageHeader title="Cuentas y ajustes" kicker="Billeteras">
+      <PageHeader
+        title="Cuentas y ajustes"
+        kicker="Billeteras"
+        actions={[
+          <Button key="account" onClick={() => setAccountDialogs({ ...accountDialogs, account: true })}>Nueva cuenta</Button>,
+          <Button key="adjust" variant="outlined" onClick={() => setAccountDialogs({ ...accountDialogs, adjust: true })}>Ajuste de saldo</Button>,
+        ]}
+      >
         El saldo inicial vive en la cuenta. Las correcciones posteriores se hacen con movimientos de ajuste.
       </PageHeader>
       <div className="row g-3">
         <div className="col-lg-4">
-          <ActionCard title="Cuentas" subtitle="Administra altas y ajustes desde acciones.">
-            <Button onClick={() => setAccountDialogs({ ...accountDialogs, account: true })}>Nueva cuenta</Button>
-            <Button variant="outlined" onClick={() => setAccountDialogs({ ...accountDialogs, adjust: true })}>Ajuste de saldo</Button>
-          </ActionCard>
           <ActionDialog open={accountDialogs.account} title="Nueva cuenta" onClose={() => setAccountDialogs({ ...accountDialogs, account: false })}>
           <form className="work-card" onSubmit={(e) => {
             e.preventDefault();
@@ -1311,14 +1453,15 @@ function TransfersScreen({ refs, mutate, reloadKey }) {
 
   return (
     <>
-      <PageHeader title="Transferencias internas" kicker="Entre cuentas">
+      <PageHeader
+        title="Transferencias internas"
+        kicker="Entre cuentas"
+        actions={<Button onClick={() => setTransferDialog(true)}>Nueva transferencia</Button>}
+      >
         Una transferencia crea salida en origen y entrada en destino. La comision se registra como egreso separado.
       </PageHeader>
       <div className="row g-3">
         <div className="col-lg-4">
-          <ActionCard title="Transferencias" subtitle="Mové fondos entre cuentas desde una ventana.">
-            <Button onClick={() => setTransferDialog(true)}>Nueva transferencia</Button>
-          </ActionCard>
           <ActionDialog open={transferDialog} title="Nueva transferencia" onClose={() => setTransferDialog(false)}>
           <form className="work-card" onSubmit={(e) => {
             e.preventDefault();
@@ -1525,14 +1668,15 @@ function ProvidersScreen({ refs, mutate, reloadKey }) {
 
   return (
     <>
-      <PageHeader title="Proveedores" kicker="Cuenta corriente">
+      <PageHeader
+        title="Proveedores"
+        kicker="Cuenta corriente"
+        actions={<Button onClick={() => setProviderDialogs({ ...providerDialogs, create: true })}>Nuevo proveedor</Button>}
+      >
         Podes cargar deuda sin mover caja o pagar directo. La cuenta corriente ahora muestra saldo acumulado y se puede exportar para compartir.
       </PageHeader>
       <div className="row g-3">
         <div className="col-lg-4">
-          <ActionCard title="Proveedores" subtitle="Lista y cuenta corriente.">
-            <Button onClick={() => setProviderDialogs({ ...providerDialogs, create: true })}>Nuevo proveedor</Button>
-          </ActionCard>
           <ActionDialog open={providerDialogs.create} title="Nuevo proveedor" onClose={() => setProviderDialogs({ ...providerDialogs, create: false })}>
           <form className="work-card" onSubmit={(e) => {
             e.preventDefault();
@@ -1694,15 +1838,18 @@ function PeopleScreen({ refs, mutate }) {
 
   return (
     <>
-      <PageHeader title="Personal eventual" kicker="Por evento">
+      <PageHeader
+        title="Personal eventual"
+        kicker="Por evento"
+        actions={[
+          <Button key="employee" onClick={() => setPeopleDialogs({ ...peopleDialogs, employee: true })}>Nuevo empleado</Button>,
+          <Button key="role" variant="outlined" onClick={() => setPeopleDialogs({ ...peopleDialogs, role: true })}>Nuevo rol</Button>,
+        ]}
+      >
         Asigna personas a eventos y paga parcial o totalmente sin perder el saldo pendiente.
       </PageHeader>
       <div className="row g-3">
         <div className="col-lg-4">
-          <ActionCard title="Personal" subtitle="Altas y roles se cargan en ventanas.">
-            <Button onClick={() => setPeopleDialogs({ ...peopleDialogs, employee: true })}>Nuevo empleado</Button>
-            <Button variant="outlined" onClick={() => setPeopleDialogs({ ...peopleDialogs, role: true })}>Nuevo rol</Button>
-          </ActionCard>
           <ActionDialog open={peopleDialogs.employee} title="Nuevo empleado" onClose={() => setPeopleDialogs({ ...peopleDialogs, employee: false })}>
           <form className="work-card" onSubmit={(e) => {
             e.preventDefault();
@@ -1775,7 +1922,6 @@ function PeopleScreen({ refs, mutate }) {
                 }, "Pago a empleado registrado");
               }}>
                 <h4 className="section-title">Pago parcial/total</h4>
-                {/* TODO: enviar automaticamente el comprobante de pago al email del empleado cuando exista backend de envio operativo. */}
                 <SelectInput label="Empleado" value={payment.employee} onChange={(v) => setPayment({ ...payment, employee: v })} options={refs.employees} labelFor={(e) => e.display_name || `${e.first_name} ${e.last_name}`} required />
                 <SelectInput label="Asignacion" value={payment.assignment} onChange={(v) => {
                   const selected = refs.assignments.find((item) => String(item.id) === String(v));
@@ -1795,6 +1941,7 @@ function PeopleScreen({ refs, mutate }) {
             <h4 className="section-title">Empleados</h4>
             <SimpleTable rows={refs.employees} columns={[
               [(row) => row.display_name || `${row.first_name} ${row.last_name}`, "Nombre"],
+              ["alias", "Alias"],
               ["phone", "Telefono"],
               ["email", "Email"],
               ["document_number", "Documento"],
@@ -1911,7 +2058,6 @@ function PaymentsScreen({ refs, mutate }) {
             const selectedAssignment = refs.assignments.find((item) => String(item.id) === String(employeePayment.assignment));
             mutate(() => api("/employee-payments/", { method: "POST", body: JSON.stringify({ ...employeePayment, employee: employeePayment.employee || selectedAssignment?.employee }) }), "Pago a empleado registrado");
           }}>
-            {/* TODO: enviar automaticamente el comprobante de pago al email del empleado cuando exista backend de envio operativo. */}
             <div className="row g-2">
               <div className="col-md-4"><SelectInput label="Empleado" value={employeePayment.employee} onChange={(v) => setEmployeePayment({ ...employeePayment, employee: v })} options={refs.employees} labelFor={(e) => e.display_name || `${e.first_name} ${e.last_name}`} required /></div>
               <div className="col-md-4"><SelectInput label="Asignacion" value={employeePayment.assignment} onChange={(v) => {
@@ -1979,7 +2125,7 @@ function EventsScreen({ refs, mutate, reloadKey }) {
   const [budgetForm, setBudgetForm] = useState({ status: "DRAFT", notes: "", optional_comments: "", internal_notes: "" });
   const [budgetItem, setBudgetItem] = useState(emptyBudgetItemForm());
   const [editingBudgetItem, setEditingBudgetItem] = useState(null);
-  const [eventPayment, setEventPayment] = useState({ account: "", amount: "", payment_method: "Efectivo", description: "", is_deposit: true, budget_item: "" });
+  const [eventPayment, setEventPayment] = useState({ account: "", amount: "", payment_method: "Efectivo", description: "", is_deposit: true, budget_item: "", receipt_email: "" });
   const [eventDialogs, setEventDialogs] = useState({ create: false, edit: false, payment: false, budget: false, item: false });
   const [checkoutPreference, setCheckoutPreference] = useState(null);
   const [paymentLoading, setPaymentLoading] = useState(false);
@@ -1989,14 +2135,14 @@ function EventsScreen({ refs, mutate, reloadKey }) {
   const [loadingBudget, setLoadingBudget] = useState(false);
 
   const filteredEvents = refs.events.filter((row) => {
-    const haystack = [row.name, row.client_name, row.event_type, row.venue_space, row.internal_status]
+    const haystack = [row.name, row.client_name, eventTypeName(row.event_type), row.venue_space, row.internal_status]
       .filter(Boolean)
       .join(" ")
       .toLowerCase();
     const matchesSearch = !filters.search || haystack.includes(filters.search.toLowerCase());
     const matchesStatus = !filters.status || row.status === filters.status;
     const matchesClient = !filters.client || String(row.client) === String(filters.client);
-    const matchesType = !filters.event_type || (row.event_type || "").toLowerCase().includes(filters.event_type.toLowerCase());
+    const matchesType = !filters.event_type || eventTypeId(row.event_type) === filters.event_type;
     const matchesInternal = !filters.internal_status || (row.internal_status || "").toLowerCase().includes(filters.internal_status.toLowerCase());
     const matchesFrom = !filters.date_from || (row.event_date && row.event_date >= filters.date_from);
     const matchesTo = !filters.date_to || (row.event_date && row.event_date <= filters.date_to);
@@ -2101,7 +2247,7 @@ function EventsScreen({ refs, mutate, reloadKey }) {
             </div>
             <TextInput label="Nombre del evento" value={newEvent.name} onChange={(v) => setNewEvent({ ...newEvent, name: v })} required />
             <div className="row g-2">
-              <div className="col-md-6"><TextInput label="Tipo" value={newEvent.event_type} onChange={(v) => setNewEvent({ ...newEvent, event_type: v })} /></div>
+              <div className="col-md-6"><SelectInput label="Tipo" value={newEvent.event_type} onChange={(v) => setNewEvent({ ...newEvent, event_type: v })} options={eventTypeOptions} labelFor={(option) => option.name} required /></div>
               <div className="col-md-6"><TextInput label="Espacio / salon" value={newEvent.venue_space} onChange={(v) => setNewEvent({ ...newEvent, venue_space: v })} /></div>
               <div className="col-md-6"><TextInput label="Monto base" type="number" value={newEvent.amount} onChange={(v) => setNewEvent({ ...newEvent, amount: v })} /></div>
               <div className="col-md-6"><SelectInput label="Estado" value={newEvent.status} onChange={(v) => setNewEvent({ ...newEvent, status: v })} options={eventStatusOptions} labelFor={(option) => option.name} required /></div>
@@ -2129,7 +2275,7 @@ function EventsScreen({ refs, mutate, reloadKey }) {
               <div className="col-md-6">
                 <SelectInput label="Cliente" value={filters.client} onChange={(v) => setFilters({ ...filters, client: v })} options={refs.clients} labelFor={(c) => c.name} empty="Todos" />
               </div>
-              <div className="col-md-6"><TextInput label="Tipo" value={filters.event_type} onChange={(v) => setFilters({ ...filters, event_type: v })} placeholder="Cumple, boda, empresa" /></div>
+              <div className="col-md-6"><SelectInput label="Tipo" value={filters.event_type} onChange={(v) => setFilters({ ...filters, event_type: v })} options={eventTypeOptions} labelFor={(option) => option.name} empty="Todos" /></div>
               <div className="col-md-6"><TextInput label="Estado interno" value={filters.internal_status} onChange={(v) => setFilters({ ...filters, internal_status: v })} placeholder="Presupuesto, menu, listo..." /></div>
               <div className="col-md-6"><TextInput label="Desde" type="date" value={filters.date_from} onChange={(v) => setFilters({ ...filters, date_from: v })} /></div>
               <div className="col-md-6"><TextInput label="Hasta" type="date" value={filters.date_to} onChange={(v) => setFilters({ ...filters, date_to: v })} /></div>
@@ -2163,7 +2309,7 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                       </div>
                     </div>
                     <div className="small text-muted mt-2">
-                      {(item.event_type || "Sin tipo")} {item.venue_space ? `· ${item.venue_space}` : ""} {item.internal_status ? `· ${item.internal_status}` : ""}
+                      {eventTypeName(item.event_type)} {item.venue_space ? `· ${item.venue_space}` : ""} {item.internal_status ? `· ${item.internal_status}` : ""}
                     </div>
                   </button>
                 </div>
@@ -2224,7 +2370,7 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                       <SelectInput label="Estado" value={editingEvent.status} onChange={(v) => setEditingEvent({ ...editingEvent, status: v })} options={eventStatusOptions} labelFor={(option) => option.name} required />
                     </div>
                     <div className="col-md-6"><TextInput label="Nombre del evento" value={editingEvent.name} onChange={(v) => setEditingEvent({ ...editingEvent, name: v })} required /></div>
-                    <div className="col-md-3"><TextInput label="Tipo" value={editingEvent.event_type} onChange={(v) => setEditingEvent({ ...editingEvent, event_type: v })} /></div>
+                    <div className="col-md-3"><SelectInput label="Tipo" value={editingEvent.event_type} onChange={(v) => setEditingEvent({ ...editingEvent, event_type: v })} options={eventTypeOptions} labelFor={(option) => option.name} required /></div>
                     <div className="col-md-3"><TextInput label="Espacio / salon" value={editingEvent.venue_space} onChange={(v) => setEditingEvent({ ...editingEvent, venue_space: v })} /></div>
                     <div className="col-md-3"><TextInput label="Fecha" type="date" value={editingEvent.event_date} onChange={(v) => setEditingEvent({ ...editingEvent, event_date: v })} /></div>
                     <div className="col-md-3"><TextInput label="Hora" type="time" value={editingEvent.event_time} onChange={(v) => setEditingEvent({ ...editingEvent, event_time: v })} /></div>
@@ -2277,7 +2423,10 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                   </div>
                   <div className="col-lg-12">
                     <ActionCard title="Registrar ingreso" subtitle="Seña, entrega o cobro asociado a un item.">
-                      <Button onClick={() => setEventDialogs({ ...eventDialogs, payment: true })}>Registrar cobro</Button>
+                      <Button onClick={() => {
+                        setEventPayment((current) => ({ ...current, receipt_email: current.receipt_email || overview?.event?.client_email || selectedEvent.contact_email || "" }));
+                        setEventDialogs({ ...eventDialogs, payment: true });
+                      }}>Registrar cobro</Button>
                     </ActionCard>
                   </div>
                 </div>
@@ -2291,7 +2440,7 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                             method: "POST",
                             body: JSON.stringify(eventPayment),
                           });
-                          setEventPayment({ account: "", amount: "", payment_method: "Efectivo", description: "", is_deposit: true, budget_item: "" });
+                          setEventPayment({ account: "", amount: "", payment_method: "Efectivo", description: "", is_deposit: true, budget_item: "", receipt_email: "" });
                           setEventDialogs((state) => ({ ...state, payment: false }));
                         }, "Cobro registrado");
                       }}
@@ -2320,6 +2469,7 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                           </div>
                         </div>
                         <div className="col-12"><TextInput label="Descripcion" value={eventPayment.description} onChange={(v) => setEventPayment({ ...eventPayment, description: v })} /></div>
+                        <div className="col-12"><TextInput label="Email comprobante" type="email" value={eventPayment.receipt_email} onChange={(v) => setEventPayment({ ...eventPayment, receipt_email: v })} /></div>
                       </div>
                       <button className="btn btn-earth mt-2">Registrar cobro</button>
                     </form>
@@ -2916,18 +3066,23 @@ function GraduationScreen({ refs, mutate }) {
   const selectedEvent = refs.graduationEvents.find((row) => String(row.id) === String(selected));
   const graduates = refs.graduates.filter((row) => String(row.graduation_event) === String(selected));
   const purchases = refs.ticketPurchases.filter((row) => String(row.graduation_event) === String(selected));
+  const graduationBaseEvents = refs.events.filter((event) => (
+    eventTypeId(event.event_type) === "EGRESADOS"
+    && !refs.graduationEvents.some((graduationEvent) => String(graduationEvent.event) === String(event.id))
+  ));
   const publicLink = selectedEvent ? `${window.location.origin}/egresados/${selectedEvent.public_token || selectedEvent.public_url_token}/` : "";
 
   return (
     <>
-      <PageHeader title="Egresados" kicker="Venta de tarjetas">
+      <PageHeader
+        title="Egresados"
+        kicker="Venta de tarjetas"
+        actions={<Button onClick={() => setGraduationDialogs({ ...graduationDialogs, link: true })}>Nuevo link</Button>}
+      >
         Gestiona el link publico, la lista de egresados y las compras pagadas por Mercado Pago.
       </PageHeader>
       <div className="row g-3">
         <div className="col-lg-4">
-          <ActionCard title="Links de egresados" subtitle="Crear link y administrar evento seleccionado.">
-            <Button onClick={() => setGraduationDialogs({ ...graduationDialogs, link: true })}>Nuevo link</Button>
-          </ActionCard>
           <ActionDialog open={graduationDialogs.link} title="Nuevo link de egresados" onClose={() => setGraduationDialogs({ ...graduationDialogs, link: false })}>
           <form
             onSubmit={(event) => {
@@ -2942,7 +3097,7 @@ function GraduationScreen({ refs, mutate }) {
             }}
           >
             <h4 className="section-title">Nuevo link</h4>
-            <SelectInput label="Evento base" value={form.event} onChange={(v) => setForm({ ...form, event: v })} options={refs.events} labelFor={(e) => e.name} required />
+            <SelectInput label="Evento base" value={form.event} onChange={(v) => setForm({ ...form, event: v })} options={graduationBaseEvents} labelFor={(e) => e.name} empty="Elegir evento egresados" required />
             <TextInput label="Precio mensual tarjeta" type="number" value={form.price_per_ticket} onChange={(v) => setForm({ ...form, price_per_ticket: v })} required />
             <div className="row g-2">
               <div className="col-md-6"><TextInput label="Vigente desde" type="date" value={form.valid_from} onChange={(v) => setForm({ ...form, valid_from: v })} /></div>
@@ -3080,7 +3235,6 @@ function AuditScreen({ refs }) {
 function PublicGraduationPage({ token }) {
   const [eventData, setEventData] = useState(null);
   const [graduates, setGraduates] = useState([]);
-  const [query, setQuery] = useState("");
   const [form, setForm] = useState({ graduate: "", quantity: "1", email: "" });
   const [status, setStatus] = useState(null);
 
@@ -3089,14 +3243,10 @@ function PublicGraduationPage({ token }) {
   }, [token]);
 
   useEffect(() => {
-    if (!query.trim()) {
-      setGraduates([]);
-      return;
-    }
-    api(`/graduation-events/${token}/graduates/search/?search=${encodeURIComponent(query)}`, { token: "" })
+    api(`/graduation-events/${token}/graduates/search/`, { token: "" })
       .then((data) => setGraduates(unwrap(data)))
       .catch((error) => setStatus({ type: "error", message: prettifyErrorMessage(error.message) }));
-  }, [query, token]);
+  }, [token]);
 
   async function submit(event) {
     event.preventDefault();
@@ -3123,7 +3273,6 @@ function PublicGraduationPage({ token }) {
           <p className="text-muted">{eventData ? `Tarjeta: ${money(eventData.price_per_ticket)}` : "Cargando evento..."}</p>
           <AlertLine status={status} />
           <form className="work-card" onSubmit={submit}>
-            <TextInput label="Buscar egresado" value={query} onChange={setQuery} placeholder="Escribí tu nombre" />
             <SelectInput label="Egresado" value={form.graduate} onChange={(v) => setForm({ ...form, graduate: v })} options={graduates} labelFor={(g) => g.display_name} required />
             <TextInput label="Cantidad de tarjetas" type="number" value={form.quantity} onChange={(v) => setForm({ ...form, quantity: v })} required />
             <TextInput label="Email" type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} required />
@@ -3137,7 +3286,7 @@ function PublicGraduationPage({ token }) {
 
 function PublicEventPaymentPage({ token }) {
   const [eventData, setEventData] = useState(null);
-  const [form, setForm] = useState({ budget_item: "", amount: "" });
+  const [form, setForm] = useState({ budget_item: "", amount: "", email: "" });
   const [status, setStatus] = useState(null);
 
   function load() {
@@ -3155,7 +3304,7 @@ function PublicEventPaymentPage({ token }) {
     try {
       const payment = await api(`/event-payments/${token}/create-preference/`, {
         method: "POST",
-        body: JSON.stringify(form.budget_item ? { budget_item: form.budget_item } : { amount: form.amount }),
+        body: JSON.stringify(form.budget_item ? { budget_item: form.budget_item, email: form.email } : { amount: form.amount, email: form.email }),
         token: "",
       });
       setStatus({ type: "success", message: "Abriendo Mercado Pago..." });
@@ -3188,11 +3337,12 @@ function PublicEventPaymentPage({ token }) {
             <SelectInput
               label="Que queres pagar"
               value={form.budget_item}
-              onChange={(v) => setForm({ budget_item: v, amount: "" })}
+              onChange={(v) => setForm({ ...form, budget_item: v, amount: "" })}
               options={items.filter((item) => Number(item.pending || item.total || 0) > 0)}
               labelFor={(item) => `${item.is_optional ? "Opcional" : "Evento"} · ${item.service_name} · ${money(item.pending || item.total)}`}
               empty="Seña u otro importe"
             />
+            <TextInput label="Email para comprobante" type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} required />
             {!form.budget_item ? (
               <TextInput label="Importe" type="number" value={form.amount} onChange={(v) => setForm({ ...form, amount: v })} required />
             ) : (
@@ -3231,14 +3381,15 @@ function TaxesScreen({ refs, mutate, reloadKey }) {
 
   return (
     <>
-      <PageHeader title="Impuestos y recordatorios" kicker="Vencimientos">
+      <PageHeader
+        title="Impuestos y recordatorios"
+        kicker="Vencimientos"
+        actions={<Button onClick={() => setTaxDialog(true)}>Registrar pago</Button>}
+      >
         Un pago de impuesto genera movimiento de caja y, si queres, el proximo recordatorio.
       </PageHeader>
       <div className="row g-3">
         <div className="col-lg-4">
-          <ActionCard title="Impuestos" subtitle="Pagos y recordatorios de vencimientos.">
-            <Button onClick={() => setTaxDialog(true)}>Registrar pago</Button>
-          </ActionCard>
           <ActionDialog open={taxDialog} title="Pago de impuesto" onClose={() => setTaxDialog(false)}>
           <form className="work-card" onSubmit={(e) => {
             e.preventDefault();

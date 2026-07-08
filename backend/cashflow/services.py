@@ -11,7 +11,8 @@ from urllib.parse import urlencode, urlsplit
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.core.mail import send_mail
+from django.core.mail import EmailMessage, send_mail
+from django.core.validators import validate_email
 from django.db import transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
@@ -54,6 +55,30 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _clean_email(value):
+    value = str(value or "").strip()
+    if not value or value.endswith("@cajamoments.local"):
+        return ""
+    validate_email(value)
+    return value
+
+
+def _movement_receipt_recipients(movement, recipient_email=""):
+    candidates = [
+        recipient_email,
+        getattr(getattr(movement, "provider", None), "email", ""),
+        getattr(getattr(movement, "employee", None), "email", ""),
+        getattr(getattr(getattr(movement, "event", None), "client", None), "email", ""),
+        getattr(getattr(movement, "event", None), "contact_email", ""),
+    ]
+    recipients = []
+    for candidate in candidates:
+        email = _clean_email(candidate)
+        if email and email not in recipients:
+            recipients.append(email)
+    return recipients
 
 
 def audit_log(user, action, obj=None, detail=""):
@@ -268,7 +293,7 @@ class MercadoPagoClient:
         budget = payment.budget
         event = budget.event
         title = f"Presupuesto {event.name}"
-        description = event.event_type or "Evento"
+        description = event.get_event_type_display() or "Evento"
         if payment.budget_item_id:
             title = payment.budget_item.service_name
             description = f"Item presupuesto - {event.name}"
@@ -452,7 +477,7 @@ def _budget_payment_amount(budget, budget_item=None, amount=None):
 
 
 @transaction.atomic
-def create_event_budget_payment_preference(budget, budget_item=None, amount=None):
+def create_event_budget_payment_preference(budget, budget_item=None, amount=None, receipt_email=""):
     if not isinstance(budget, EventBudget):
         budget = EventBudget.objects.select_for_update().select_related("event", "event__client").get(pk=budget)
     else:
@@ -468,12 +493,19 @@ def create_event_budget_payment_preference(budget, budget_item=None, amount=None
             amount=amount,
             budget_item=budget_item,
             currency=Account.Currency.ARS,
+            receipt_email=_clean_email(receipt_email),
             status__in=[EventBudgetPayment.Status.PENDING, EventBudgetPayment.Status.IN_PROCESS],
         )
         .exclude(mp_preference_id="")
         .first()
     )
-    payment = reusable or EventBudgetPayment.objects.create(budget=budget, budget_item=budget_item, amount=amount, currency=Account.Currency.ARS)
+    payment = reusable or EventBudgetPayment.objects.create(
+        budget=budget,
+        budget_item=budget_item,
+        amount=amount,
+        currency=Account.Currency.ARS,
+        receipt_email=_clean_email(receipt_email),
+    )
     if not payment.mp_preference_id:
         preference = MercadoPagoClient().create_budget_preference(payment)
         preference_id = str(preference.get("id") or "")
@@ -536,7 +568,7 @@ def create_event_with_client_and_amount(event_data, client_data, amount=None, us
 
 
 @transaction.atomic
-def register_event_payment(event, account, amount, payment_date=None, payment_method="Manual", description="", is_deposit=False, budget_item=None, user=None):
+def register_event_payment(event, account, amount, payment_date=None, payment_method="Manual", description="", is_deposit=False, budget_item=None, receipt_email="", user=None):
     if not isinstance(event, Event):
         event = Event.objects.select_for_update().get(pk=event)
     if event.closed_at:
@@ -560,6 +592,7 @@ def register_event_payment(event, account, amount, payment_date=None, payment_me
         amount=amount,
         currency=account.currency,
         payment_method=payment_method,
+        receipt_email=_clean_email(receipt_email),
     )
     code, _ = MovementCode.objects.get_or_create(
         code="SEÑA_EVENTO" if is_deposit else "COBRO_EVENTO",
@@ -587,6 +620,7 @@ def register_event_payment(event, account, amount, payment_date=None, payment_me
     )
     payment.cash_movement = movement
     payment.save(update_fields=["cash_movement", "updated_at"])
+    send_cash_movement_receipt_email(movement, payment.receipt_email)
     if is_deposit and event.status == Event.Status.DRAFT:
         event.status = Event.Status.SIGNALED
         event.save(update_fields=["status", "updated_at"])
@@ -595,7 +629,7 @@ def register_event_payment(event, account, amount, payment_date=None, payment_me
 
 
 @transaction.atomic
-def register_event_budget_item_manual_payment(budget_item, account, amount=None, payment_date=None, payment_method="Manual", description="", user=None):
+def register_event_budget_item_manual_payment(budget_item, account, amount=None, payment_date=None, payment_method="Manual", description="", receipt_email="", user=None):
     if not isinstance(budget_item, EventBudgetItem):
         budget_item = EventBudgetItem.objects.select_related("budget", "budget__event").get(pk=budget_item)
     if not isinstance(account, Account):
@@ -610,6 +644,7 @@ def register_event_budget_item_manual_payment(budget_item, account, amount=None,
         amount=amount,
         currency=account.currency,
         payment_method=payment_method,
+        receipt_email=_clean_email(receipt_email),
     )
     code = get_code("COBRO_EVENTO")
     movement = CashMovement.objects.create(
@@ -628,6 +663,7 @@ def register_event_budget_item_manual_payment(budget_item, account, amount=None,
     )
     payment.cash_movement = movement
     payment.save(update_fields=["cash_movement", "updated_at"])
+    send_cash_movement_receipt_email(movement, payment.receipt_email)
     return payment
 
 
@@ -733,6 +769,8 @@ def ensure_event_budget_payment_cash_movement(payment, payment_data=None):
     )
     payment.cash_movement = movement
     payment.save(update_fields=["cash_movement", "updated_at"])
+    payer_email = ((payment_data.get("payer") or {}).get("email") if isinstance(payment_data, dict) else "") or ""
+    send_cash_movement_receipt_email(movement, payment.receipt_email or payer_email)
     return movement
 
 
@@ -883,6 +921,7 @@ def register_ticket_purchase_manual(graduation_event, graduate, quantity, accoun
     )
     purchase.cash_movement = movement
     purchase.save(update_fields=["cash_movement", "updated_at"])
+    send_cash_movement_receipt_email(movement, purchase.email)
     audit_log(user, "ticket_purchase_manual", purchase, f"{quantity} tarjetas")
     return purchase
 
@@ -1015,6 +1054,7 @@ def ensure_ticket_purchase_cash_movement(purchase, payment_data=None):
     purchase.cash_movement = movement
     purchase.payment_date = movement.date_payment
     purchase.save(update_fields=["cash_movement", "payment_date", "updated_at"])
+    send_cash_movement_receipt_email(movement, purchase.email)
     return movement
 
 
@@ -1298,6 +1338,33 @@ def build_cash_movement_receipt_pdf(movement):
     return bytes(pdf)
 
 
+def send_cash_movement_receipt_email(movement, recipient_email=""):
+    if not isinstance(movement, CashMovement):
+        movement = CashMovement.objects.select_related("account", "code", "provider", "employee", "event", "event__client").get(pk=movement)
+    recipients = _movement_receipt_recipients(movement, recipient_email)
+    if movement.status != CashMovement.Status.CONFIRMED or not recipients:
+        return False
+
+    def _send():
+        try:
+            refreshed = CashMovement.objects.select_related("account", "code", "provider", "employee", "event", "event__client").get(pk=movement.pk)
+            pdf = build_cash_movement_receipt_pdf(refreshed)
+            title = "Recibo" if refreshed.movement_type in (CashMovement.MovementType.INCOME, CashMovement.MovementType.TRANSFER_IN, CashMovement.MovementType.ADJUSTMENT) else "Comprobante de pago"
+            message = EmailMessage(
+                subject=f"{title} CM-{refreshed.id:06d}",
+                body=f"Adjuntamos el comprobante correspondiente a {refreshed.description}.",
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                to=recipients,
+            )
+            message.attach(f"comprobante-CM-{refreshed.id:06d}.pdf", pdf, "application/pdf")
+            message.send(fail_silently=False)
+        except Exception:
+            logger.exception("No se pudo enviar el comprobante del movimiento %s", movement.pk)
+
+    transaction.on_commit(_send)
+    return True
+
+
 def export_daily_account_close_csv(daily_close):
     if not isinstance(daily_close, DailyAccountClose):
         daily_close = DailyAccountClose.objects.select_related("account", "close_group").get(pk=daily_close)
@@ -1439,6 +1506,7 @@ def register_provider_payment(provider, account, amount, payment_date=None, even
         amount=amount,
         cash_movement=movement,
     )
+    send_cash_movement_receipt_email(movement, provider.email)
     audit_log(user, "provider_payment", ledger)
     return ledger
 
@@ -1487,6 +1555,7 @@ def register_employee_payment(employee, account, amount, payment_date=None, assi
         elif paid_amount > 0:
             assignment.status = EventStaffAssignment.Status.PARTIALLY_PAID
         assignment.save(update_fields=["status", "updated_at"])
+    send_cash_movement_receipt_email(movement, employee.email)
     audit_log(user, "employee_payment", payment)
     return payment
 
@@ -1512,6 +1581,7 @@ def register_service_payment(service_type, account, amount, payment_date=None, d
         created_by=user,
         updated_by=user,
     )
+    send_cash_movement_receipt_email(movement)
     audit_log(user, "service_payment", movement)
     return movement
 
@@ -1561,6 +1631,7 @@ def register_tax_payment(
     )
     tax_payment.cash_movement = movement
     tax_payment.save(update_fields=["cash_movement", "updated_at"])
+    send_cash_movement_receipt_email(movement)
 
     reminder = None
     if reminder_due_date or recurrence_type != Reminder.RecurrenceType.NONE:

@@ -100,6 +100,7 @@ from .services import (
     register_provider_payment,
     register_service_payment,
     register_tax_payment,
+    send_cash_movement_receipt_email,
     register_ticket_purchase_manual,
     close_graduation_event,
     create_graduation_ticket_price,
@@ -211,6 +212,7 @@ class CashMovementViewSet(AuditedModelViewSet):
     def perform_create(self, serializer):
         obj = serializer.save(created_by=request_user_or_none(self.request), updated_by=request_user_or_none(self.request))
         audit_log(request_user_or_none(self.request), "cash_movement_create", obj)
+        send_cash_movement_receipt_email(obj)
 
     def perform_update(self, serializer):
         obj = serializer.save(updated_by=request_user_or_none(self.request))
@@ -463,6 +465,7 @@ class EventViewSet(AuditedModelViewSet):
                 description=request.data.get("description", ""),
                 is_deposit=bool(request.data.get("is_deposit")),
                 budget_item=request.data.get("budget_item") or None,
+                receipt_email=request.data.get("receipt_email", ""),
                 user=request_user_or_none(request),
             )
         except ValidationError as exc:
@@ -505,6 +508,7 @@ class EventBudgetItemViewSet(AuditedModelViewSet):
                 payment_date=parse_date(request.data.get("date"), timezone.localdate()),
                 payment_method=request.data.get("payment_method", "Manual"),
                 description=request.data.get("description", ""),
+                receipt_email=request.data.get("receipt_email", ""),
                 user=request_user_or_none(request),
             )
         except ValidationError as exc:
@@ -527,7 +531,12 @@ class EventBudgetPaymentPreferenceAPIView(APIView):
         budget = get_object_or_404(EventBudget, pk=request.data.get("budget"))
         budget_item = request.data.get("budget_item")
         try:
-            payment = create_event_budget_payment_preference(budget, budget_item=budget_item, amount=request.data.get("amount"))
+            payment = create_event_budget_payment_preference(
+                budget,
+                budget_item=budget_item,
+                amount=request.data.get("amount"),
+                receipt_email=request.data.get("receipt_email", ""),
+            )
         except ValidationError as exc:
             return validation_error_response(exc)
         except MercadoPagoAPIError as exc:
@@ -592,11 +601,15 @@ class EventPaymentPreferencePublicAPIView(APIView):
         event = get_object_or_404(Event, public_payment_token=token)
         budget = get_or_create_event_budget(event)
         budget_item = request.data.get("budget_item") or None
+        receipt_email = request.data.get("email", "") or request.data.get("receipt_email", "")
+        if not receipt_email:
+            return validation_error_response(ValidationError("El email para comprobante es obligatorio."))
         try:
             payment = create_event_budget_payment_preference(
                 budget,
                 budget_item=budget_item,
                 amount=request.data.get("amount") if not budget_item else None,
+                receipt_email=receipt_email,
             )
         except ValidationError as exc:
             return validation_error_response(exc)
@@ -845,10 +858,10 @@ class GraduationEventGraduateSearchAPIView(APIView):
     def get(self, request, token):
         graduation_event = get_object_or_404(GraduationEvent, public_token=token, active=True)
         search = str(request.query_params.get("search") or "").strip()
-        rows = graduation_event.graduates.all()
+        rows = graduation_event.graduates.all().order_by("last_name", "first_name")
         if search:
             rows = rows.filter(Q(first_name__icontains=search) | Q(last_name__icontains=search))
-        return Response(GraduateSerializer(rows[:20], many=True).data)
+        return Response(GraduateSerializer(rows, many=True).data)
 
 
 class TicketPurchasePreferenceAPIView(APIView):

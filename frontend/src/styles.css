@@ -16,6 +16,10 @@ body {
   font-family: "Inter", "Avenir Next", system-ui, sans-serif;
 }
 
+#root {
+  min-width: 0;
+}
+
 .app-shell {
   min-height: 100vh;
   display: grid;
@@ -66,11 +70,26 @@ body {
 }
 
 .main-stage {
+  width: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
   padding: 2rem;
   overflow-x: hidden;
 }
 
-.main-stage > .row > [class*="col-"] {
+.main-stage > .row > [class*="col-"],
+.main-stage .row > .col-xl-4,
+.main-stage .row > .col-xl-8,
+.main-stage .row > .col-lg-4,
+.main-stage .row > .col-lg-5,
+.main-stage .row > .col-lg-6,
+.main-stage .row > .col-lg-7,
+.main-stage .row > .col-lg-8,
+.main-stage .row > .col-md-5,
+.main-stage .row > .col-md-7,
+.main-stage .row > .col-md-6:has(> .work-card),
+.main-stage .row > .col-md-6:has(> .MuiCard-root.work-card),
+.main-stage .row > .col-md-6:has(> button.w-100.text-start) {
   flex: 0 0 100%;
   max-width: 100%;
   width: 100%;
@@ -91,6 +110,8 @@ body {
 
 .hero-card,
 .work-card {
+  min-width: 0;
+  max-width: 100%;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--paper);
@@ -106,6 +127,48 @@ body {
   letter-spacing: 0;
 }
 
+.page-header-content.MuiCardContent-root {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1rem;
+}
+
+.page-header-actions {
+  align-items: center;
+  align-self: center;
+  flex-shrink: 0;
+  justify-content: flex-end;
+  margin-left: auto;
+}
+
+.page-header-actions .MuiButton-root {
+  min-height: 34px;
+  padding: 5px 13px;
+  font-size: 0.86rem;
+  line-height: 1.2;
+  box-shadow: none;
+}
+
+.action-card-content {
+  align-items: center;
+  width: 100%;
+}
+
+.action-card-actions {
+  align-items: center;
+  justify-content: flex-end;
+  margin-left: auto;
+}
+
+.action-card-actions .MuiButton-root {
+  min-height: 32px;
+  padding: 5px 12px;
+  font-size: 0.84rem;
+  line-height: 1.2;
+  box-shadow: none;
+}
+
 .work-card {
   padding: 1.15rem;
 }
@@ -115,6 +178,7 @@ body {
 }
 
 .metric-card {
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: #ffffff;
@@ -123,8 +187,10 @@ body {
 }
 
 .metric-card strong {
+  display: block;
   font-size: 1.45rem;
   letter-spacing: 0;
+  overflow-wrap: anywhere;
 }
 
 .section-title {
@@ -155,6 +221,15 @@ body {
   border-radius: 10px;
   overflow: hidden;
   border: 1px solid var(--line);
+}
+
+.MuiTableContainer-root {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.MuiDialog-paper {
+  max-width: calc(100% - 1rem);
 }
 
 .budget-items-editor > form {
@@ -207,5 +282,43 @@ body {
 
   .main-stage {
     padding: 1rem;
+  }
+
+  .page-header-actions {
+    align-self: stretch;
+    justify-content: flex-start;
+    margin-left: 0;
+  }
+
+  .page-header-content.MuiCardContent-root {
+    grid-template-columns: 1fr;
+  }
+
+  .action-card-actions {
+    justify-content: flex-start;
+    margin-left: 0;
+  }
+}
+
+@media (max-width: 600px) {
+  .main-stage {
+    padding: 0.75rem;
+  }
+
+  .hero-card {
+    margin-bottom: 0.75rem;
+  }
+
+  .work-card {
+    padding: 0.9rem;
+  }
+
+  .page-header-content.MuiCardContent-root,
+  .MuiCardContent-root {
+    padding: 1rem;
+  }
+
+  .row {
+    --bs-gutter-x: 0.75rem;
   }
 }

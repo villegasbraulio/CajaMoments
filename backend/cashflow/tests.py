@@ -2,6 +2,7 @@ from datetime import date
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.exceptions import ValidationError
@@ -265,7 +266,7 @@ class EventModuleStageOneTests(TestCase):
             {
                 "client": self.client_obj.id,
                 "name": "Casamiento Abril",
-                "event_type": "Casamiento",
+                "event_type": Event.Type.CASAMIENTO,
                 "event_date": "2026-07-20",
                 "event_time": "21:30:00",
                 "venue_space": "Salon principal",
@@ -290,6 +291,18 @@ class EventModuleStageOneTests(TestCase):
         self.assertEqual(response.data["venue_space"], "Salon principal")
         self.assertEqual(response.data["guest_count_total"], 220)
         self.assertEqual(response.data["client_name"], self.client_obj.name)
+
+    def test_graduation_link_requires_graduation_event_type(self):
+        response = self.client_api.post(
+            "/api/graduation-events/",
+            {
+                "event": self.event.id,
+                "price_per_ticket": "1500.00",
+                "valid_from": "2026-07-01",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
 
     def test_event_overview_returns_operational_and_financial_summary(self):
         EventStaffAssignment.objects.create(
@@ -380,7 +393,7 @@ class Event360Tests(TestCase):
 
     def test_create_event_with_client_and_amount_creates_base_budget_item(self):
         event = create_event_with_client_and_amount(
-            {"name": "Casamiento Diaz", "event_type": "Boda", "status": Event.Status.DRAFT},
+            {"name": "Casamiento Diaz", "event_type": Event.Type.CASAMIENTO, "status": Event.Status.DRAFT},
             {"name": "Familia Diaz", "phone": "123", "email": "familia@example.com"},
             amount=Decimal("150000.00"),
             user=self.user,
@@ -394,7 +407,7 @@ class Event360Tests(TestCase):
             {
                 "client_name": "Escuela Norte",
                 "name": "Cena egresados",
-                "event_type": "Egresados",
+                "event_type": Event.Type.EGRESADOS,
                 "event_date": "2026-09-20",
                 "status": "DRAFT",
                 "amount": "250000.00",
@@ -408,26 +421,30 @@ class Event360Tests(TestCase):
 
     def test_register_deposit_updates_balance_and_event_status(self):
         event = create_event_with_client_and_amount(
-            {"name": "Cumple Mora", "event_type": "Cumple", "status": Event.Status.DRAFT},
-            {"name": "Mora"},
+            {"name": "Cumple Mora", "event_type": Event.Type.QUINCE, "status": Event.Status.DRAFT},
+            {"name": "Mora", "email": "mora@example.com"},
             amount=Decimal("100000.00"),
             user=self.user,
         )
-        payment = register_event_payment(
-            event,
-            self.cash,
-            Decimal("30000.00"),
-            payment_date=date(2026, 7, 10),
-            payment_method="Efectivo",
-            is_deposit=True,
-            user=self.user,
-        )
+        with self.captureOnCommitCallbacks(execute=True):
+            payment = register_event_payment(
+                event,
+                self.cash,
+                Decimal("30000.00"),
+                payment_date=date(2026, 7, 10),
+                payment_method="Efectivo",
+                is_deposit=True,
+                user=self.user,
+            )
         event.refresh_from_db()
         overview = get_event_overview(event)
         self.assertEqual(payment.cash_movement.code.code, "SEÑA_EVENTO")
         self.assertEqual(event.status, Event.Status.SIGNALED)
         self.assertEqual(overview["financial"]["event_total"], Decimal("100000.00"))
         self.assertEqual(overview["financial"]["paid"], Decimal("30000.00"))
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ["mora@example.com"])
+        self.assertEqual(mail.outbox[0].attachments[0][2], "application/pdf")
         self.assertEqual(overview["financial"]["pending"], Decimal("70000.00"))
 
     @patch("cashflow.services.MercadoPagoClient")
@@ -438,7 +455,7 @@ class Event360Tests(TestCase):
             "sandbox_init_point": "https://sandbox.mercadopago.com.ar/checkout/v1/redirect?pref_id=pref_public_event",
         }
         event = create_event_with_client_and_amount(
-            {"name": "Fiesta Alvarez", "event_type": "Social", "status": Event.Status.DRAFT},
+            {"name": "Fiesta Alvarez", "event_type": Event.Type.EVENTO_PRIVADO, "status": Event.Status.DRAFT},
             {"name": "Alvarez"},
             amount=Decimal("90000.00"),
             user=self.user,
@@ -459,16 +476,17 @@ class Event360Tests(TestCase):
 
         preference_response = self.client_api.post(
             f"/api/event-payments/{event.public_payment_token}/create-preference/",
-            {"budget_item": optional.id},
+            {"budget_item": optional.id, "email": "cliente-publico@example.com"},
             format="json",
         )
         self.assertEqual(preference_response.status_code, 201)
         self.assertEqual(preference_response.data["preference_id"], "pref_public_event")
         self.assertEqual(Decimal(str(preference_response.data["amount"])), Decimal("15000.00"))
+        self.assertEqual(preference_response.data["receipt_email"], "cliente-publico@example.com")
 
     def test_close_event_freezes_final_numbers(self):
         event = create_event_with_client_and_amount(
-            {"name": "Evento cierre", "event_type": "Corporativo", "status": Event.Status.CONFIRMED},
+            {"name": "Evento cierre", "event_type": Event.Type.EVENTO_PRIVADO, "status": Event.Status.CONFIRMED},
             {"name": "Empresa"},
             amount=Decimal("120000.00"),
             user=self.user,
@@ -568,9 +586,12 @@ class EventBudgetPaymentStageThreeTests(TestCase):
             "payment_type_id": "credit_card",
             "installments": 1,
             "date_approved": "2026-06-12T10:20:30.000-03:00",
+            "collector_id": settings.MERCADOPAGO_COLLECTOR_ID,
+            "payer": {"email": "cliente-mp@example.com"},
         }
-        sync_event_budget_payment(payment.id, payload)
-        sync_event_budget_payment(payment.id, payload)
+        with self.captureOnCommitCallbacks(execute=True):
+            sync_event_budget_payment(payment.id, payload)
+            sync_event_budget_payment(payment.id, payload)
         payment.refresh_from_db()
         self.budget.refresh_from_db()
         self.assertEqual(payment.status, EventBudgetPayment.Status.APPROVED)
@@ -584,6 +605,9 @@ class EventBudgetPaymentStageThreeTests(TestCase):
             CashMovement.objects.filter(event=self.event, code__code="COBRO_EVENTO", amount=Decimal("2000.00")).count(),
             1,
         )
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ["cliente-mp@example.com"])
+        self.assertEqual(mail.outbox[0].attachments[0][2], "application/pdf")
 
     def test_refunded_payment_creates_one_reversal_movement(self):
         payment = EventBudgetPayment.objects.create(
@@ -599,6 +623,7 @@ class EventBudgetPaymentStageThreeTests(TestCase):
             "transaction_amount": "2000.00",
             "currency_id": "ARS",
             "date_approved": "2026-06-12T10:20:30.000-03:00",
+            "collector_id": settings.MERCADOPAGO_COLLECTOR_ID,
         }
         refund_payload = {
             "id": "pay_123",
@@ -632,6 +657,8 @@ class GraduationTicketTests(TestCase):
         call_command("seed_initial_data", verbosity=0)
         self.client_api = APIClient()
         self.event = Event.objects.get(name="Evento ejemplo")
+        self.event.event_type = Event.Type.EGRESADOS
+        self.event.save(update_fields=["event_type", "updated_at"])
         self.graduation_event = GraduationEvent.objects.create(event=self.event, price_per_ticket=Decimal("1500.00"), capacity=100, max_tickets_per_graduate=3)
         GraduationTicketPrice.objects.create(graduation_event=self.graduation_event, price=Decimal("1500.00"), valid_from=date(2026, 6, 1))
         self.graduate = Graduate.objects.create(graduation_event=self.graduation_event, first_name="Ana", last_name="Lopez")
@@ -646,6 +673,9 @@ class GraduationTicketTests(TestCase):
         }
         public_response = self.client_api.get(f"/api/graduation-events/{self.graduation_event.public_token}/public/")
         self.assertEqual(public_response.status_code, 200)
+        list_response = self.client_api.get(f"/api/graduation-events/{self.graduation_event.public_token}/graduates/search/")
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(list_response.data[0]["display_name"], "Ana Lopez")
         search_response = self.client_api.get(f"/api/graduation-events/{self.graduation_event.public_token}/graduates/search/?search=ana")
         self.assertEqual(search_response.status_code, 200)
         self.assertEqual(search_response.data[0]["display_name"], "Ana Lopez")
@@ -663,11 +693,15 @@ class GraduationTicketTests(TestCase):
             "currency_id": "ARS",
             "date_approved": "2026-06-12T10:20:30.000-03:00",
         }
-        sync_ticket_purchase_payment(purchase.id, approved_payload)
+        with self.captureOnCommitCallbacks(execute=True):
+            sync_ticket_purchase_payment(purchase.id, approved_payload)
         purchase.refresh_from_db()
         self.assertEqual(purchase.status, TicketPurchase.Status.PAID)
         self.assertIsNotNone(purchase.cash_movement)
         self.assertEqual(purchase.cash_movement.amount, Decimal("3000.00"))
+        self.assertEqual(len(mail.outbox), 2)
+        self.assertEqual(mail.outbox[1].to, ["ana@example.com"])
+        self.assertEqual(mail.outbox[1].attachments[0][2], "application/pdf")
 
         refund_payload = {"id": "ticket_pay_123", "status": "refunded", "date_approved": "2026-06-13T09:00:00.000-03:00"}
         sync_ticket_purchase_payment(purchase.id, refund_payload)
@@ -687,19 +721,23 @@ class GraduationTicketTests(TestCase):
         self.assertEqual(self.graduation_event.current_ticket_price(date(2026, 7, 10)), Decimal("1800.00"))
         self.assertEqual(self.graduation_event.current_ticket_price(date(2026, 8, 10)), Decimal("2000.00"))
 
-        purchase = register_ticket_purchase_manual(
-            self.graduation_event,
-            self.graduate,
-            2,
-            cash,
-            email="ana@example.com",
-            payment_date=date(2026, 7, 10),
-            payment_method="Efectivo",
-            user=user,
-        )
+        with self.captureOnCommitCallbacks(execute=True):
+            purchase = register_ticket_purchase_manual(
+                self.graduation_event,
+                self.graduate,
+                2,
+                cash,
+                email="ana@example.com",
+                payment_date=date(2026, 7, 10),
+                payment_method="Efectivo",
+                user=user,
+            )
         self.assertEqual(purchase.total_amount, Decimal("3600.00"))
         self.assertEqual(purchase.cash_movement.amount, Decimal("3600.00"))
         self.assertEqual(purchase.created_by, user)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ["ana@example.com"])
+        self.assertEqual(mail.outbox[0].attachments[0][2], "application/pdf")
         self.assertTrue(AuditLogEntry.objects.filter(user=user, action="ticket_purchase_manual").exists())
 
         with self.assertRaises(ValidationError):
@@ -719,8 +757,9 @@ class PaymentsAndAuditTests(TestCase):
         self.cash = Account.objects.get(name="EFECTIVO")
 
     def test_employee_email_and_service_payment_audit(self):
-        employee = Employee.objects.create(first_name="Eva", last_name="Diaz", document_number="200", email="eva@example.com")
+        employee = Employee.objects.create(first_name="Eva", last_name="Diaz", alias="eva.mp", document_number="200", email="eva@example.com")
         self.assertEqual(employee.email, "eva@example.com")
+        self.assertEqual(str(employee), "Eva Diaz")
         service_type, _ = ServiceType.objects.get_or_create(name="Internet")
         movement = register_service_payment(service_type, self.cash, Decimal("123.00"), date(2026, 7, 10), "Fibra", "Transferencia", self.user)
         self.assertEqual(movement.service_type, service_type)

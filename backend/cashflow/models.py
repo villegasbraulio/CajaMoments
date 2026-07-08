@@ -156,8 +156,7 @@ class Employee(TimestampedModel):
         unique_together = [("first_name", "last_name", "document_number")]
 
     def __str__(self):
-        display = f"{self.first_name} {self.last_name}".strip()
-        return self.alias or display
+        return f"{self.first_name} {self.last_name}".strip()
 
 
 class Client(TimestampedModel):
@@ -182,9 +181,15 @@ class Event(TimestampedModel):
         CLOSED = "CLOSED", "Cerrado"
         CANCELLED = "CANCELLED", "Cancelado"
 
+    class Type(models.TextChoices):
+        QUINCE = "QUINCE", "Cumpleaños de 15"
+        EGRESADOS = "EGRESADOS", "Egresados"
+        EVENTO_PRIVADO = "EVENTO_PRIVADO", "Evento privado"
+        CASAMIENTO = "CASAMIENTO", "Casamiento"
+
     client = models.ForeignKey(Client, null=True, blank=True, on_delete=models.SET_NULL, related_name="events")
     name = models.CharField(max_length=180)
-    event_type = models.CharField(max_length=120, blank=True)
+    event_type = models.CharField(max_length=32, choices=Type.choices, default=Type.EVENTO_PRIVADO)
     event_date = models.DateField(null=True, blank=True)
     event_time = models.TimeField(null=True, blank=True)
     venue_space = models.CharField(max_length=160, blank=True)
@@ -342,6 +347,7 @@ class EventBudgetPayment(TimestampedModel):
     installments = models.PositiveIntegerField(default=1)
     amount = models.DecimalField(max_digits=MONEY_MAX_DIGITS, decimal_places=MONEY_DECIMAL_PLACES)
     currency = models.CharField(max_length=3, default=Account.Currency.ARS)
+    receipt_email = models.EmailField(blank=True)
     cash_movement = models.OneToOneField(
         "CashMovement",
         null=True,
