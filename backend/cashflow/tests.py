@@ -1,6 +1,6 @@
 from datetime import date
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -54,6 +54,7 @@ from .services import (
     register_service_payment,
     register_ticket_purchase_manual,
     register_tax_payment,
+    MercadoPagoClient,
     sync_event_budget_payment,
     sync_ticket_purchase_payment,
     void_cash_movement,
@@ -438,6 +439,7 @@ class Event360Tests(TestCase):
             )
         event.refresh_from_db()
         overview = get_event_overview(event)
+        self.assertEqual(payment.payment_purpose, EventBudgetPayment.Purpose.DEPOSIT)
         self.assertEqual(payment.cash_movement.code.code, "SEÑA_EVENTO")
         self.assertEqual(event.status, Event.Status.SIGNALED)
         self.assertEqual(overview["financial"]["event_total"], Decimal("100000.00"))
@@ -446,6 +448,15 @@ class Event360Tests(TestCase):
         self.assertEqual(mail.outbox[0].to, ["mora@example.com"])
         self.assertEqual(mail.outbox[0].attachments[0][2], "application/pdf")
         self.assertEqual(overview["financial"]["pending"], Decimal("70000.00"))
+        with self.assertRaises(ValidationError):
+            register_event_payment(
+                event,
+                self.cash,
+                Decimal("10000.00"),
+                payment_date=date(2026, 7, 10),
+                is_deposit=True,
+                user=self.user,
+            )
 
     @patch("cashflow.services.MercadoPagoClient")
     def test_public_event_payment_context_and_preference(self, mercado_pago_client):
@@ -472,6 +483,7 @@ class Event360Tests(TestCase):
         public_response = self.client_api.get(f"/api/event-payments/{event.public_payment_token}/public/")
         self.assertEqual(public_response.status_code, 200)
         self.assertEqual(Decimal(str(public_response.data["budget_summary"]["grand_total"])), Decimal("105000.00"))
+        self.assertTrue(public_response.data["can_pay_deposit"])
         self.assertEqual(len(public_response.data["items"]), 2)
 
         preference_response = self.client_api.post(
@@ -482,7 +494,30 @@ class Event360Tests(TestCase):
         self.assertEqual(preference_response.status_code, 201)
         self.assertEqual(preference_response.data["preference_id"], "pref_public_event")
         self.assertEqual(Decimal(str(preference_response.data["amount"])), Decimal("15000.00"))
+        self.assertEqual(preference_response.data["payment_purpose"], EventBudgetPayment.Purpose.BUDGET_ITEM)
         self.assertEqual(preference_response.data["receipt_email"], "cliente-publico@example.com")
+        EventBudgetPayment.objects.create(
+            budget=event.budget,
+            payment_purpose=EventBudgetPayment.Purpose.DEPOSIT,
+            status=EventBudgetPayment.Status.PENDING,
+            amount=Decimal("30000.00"),
+            currency=Account.Currency.ARS,
+        )
+        pending_deposit_response = self.client_api.get(f"/api/event-payments/{event.public_payment_token}/public/")
+        self.assertEqual(pending_deposit_response.status_code, 200)
+        self.assertFalse(pending_deposit_response.data["can_pay_deposit"])
+        EventBudgetPayment.objects.create(
+            budget=event.budget,
+            budget_item=optional,
+            payment_purpose=EventBudgetPayment.Purpose.BUDGET_ITEM,
+            status=EventBudgetPayment.Status.APPROVED,
+            amount=optional.total,
+            currency=Account.Currency.ARS,
+        )
+        paid_response = self.client_api.get(f"/api/event-payments/{event.public_payment_token}/public/")
+        self.assertEqual(paid_response.status_code, 200)
+        self.assertFalse(paid_response.data["can_pay_deposit"])
+        self.assertNotIn(optional.id, [item["id"] for item in paid_response.data["items"]])
 
     def test_close_event_freezes_final_numbers(self):
         event = create_event_with_client_and_amount(
@@ -525,6 +560,7 @@ class EventBudgetPaymentStageThreeTests(TestCase):
         }
         payment = create_event_budget_payment_preference(self.budget)
         self.assertEqual(payment.amount, Decimal("2000.00"))
+        self.assertEqual(payment.payment_purpose, EventBudgetPayment.Purpose.ADVANCE)
         self.assertEqual(payment.mp_preference_id, "pref_123")
 
         response = self.client_api.post("/api/event-budget-payments/create-preference/", {"budget": self.budget.id}, format="json")
@@ -537,9 +573,18 @@ class EventBudgetPaymentStageThreeTests(TestCase):
         item = self.budget.items.get(service_name="Servicio integral")
         manual = register_event_budget_item_manual_payment(item, Account.objects.get(name="EFECTIVO"), payment_date=date(2026, 6, 12))
         self.assertEqual(manual.budget_item, item)
+        self.assertEqual(manual.payment_purpose, EventBudgetPayment.Purpose.BUDGET_ITEM)
         self.assertEqual(manual.cash_movement.amount, Decimal("2000.00"))
         self.assertEqual(manual.cash_movement.code.code, "COBRO_EVENTO")
+        with self.assertRaises(ValidationError):
+            register_event_budget_item_manual_payment(item, Account.objects.get(name="EFECTIVO"), payment_date=date(2026, 6, 12))
 
+        item_for_mp = EventBudgetItem.objects.create(
+            budget=self.budget,
+            service_name="Luces",
+            quantity=Decimal("1.00"),
+            unit_price=Decimal("500.00"),
+        )
         mercado_pago_client.return_value.create_budget_preference.return_value = {
             "id": "pref_item",
             "init_point": "https://www.mercadopago.com.ar/checkout/v1/redirect?pref_id=pref_item",
@@ -547,11 +592,12 @@ class EventBudgetPaymentStageThreeTests(TestCase):
         }
         response = self.client_api.post(
             "/api/event-budget-payments/create-preference/",
-            {"budget": self.budget.id, "budget_item": item.id},
+            {"budget": self.budget.id, "budget_item": item_for_mp.id},
             format="json",
         )
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.data["budget_item"], item.id)
+        self.assertEqual(response.data["budget_item"], item_for_mp.id)
+        self.assertEqual(response.data["payment_purpose"], EventBudgetPayment.Purpose.BUDGET_ITEM)
 
     def test_cash_movement_receipt_endpoint_returns_pdf(self):
         movement = CashMovement.objects.create(
@@ -600,9 +646,9 @@ class EventBudgetPaymentStageThreeTests(TestCase):
         self.assertEqual(payment.cash_movement.amount, Decimal("2000.00"))
         self.assertEqual(payment.cash_movement.date_payment, date(2026, 6, 12))
         self.assertEqual(payment.cash_movement.account.name, "MERCADO PAGO")
-        self.assertEqual(payment.cash_movement.code.code, "COBRO_EVENTO")
+        self.assertEqual(payment.cash_movement.code.code, "ADELANTO_EVENTO")
         self.assertEqual(
-            CashMovement.objects.filter(event=self.event, code__code="COBRO_EVENTO", amount=Decimal("2000.00")).count(),
+            CashMovement.objects.filter(event=self.event, code__code="ADELANTO_EVENTO", amount=Decimal("2000.00")).count(),
             1,
         )
         self.assertEqual(len(mail.outbox), 1)
@@ -662,6 +708,35 @@ class GraduationTicketTests(TestCase):
         self.graduation_event = GraduationEvent.objects.create(event=self.event, price_per_ticket=Decimal("1500.00"), capacity=100, max_tickets_per_graduate=3)
         GraduationTicketPrice.objects.create(graduation_event=self.graduation_event, price=Decimal("1500.00"), valid_from=date(2026, 6, 1))
         self.graduate = Graduate.objects.create(graduation_event=self.graduation_event, first_name="Ana", last_name="Lopez")
+
+    @override_settings(MERCADOPAGO_ACCESS_TOKEN="test-token")
+    @patch("cashflow.services.RequestOptions")
+    @patch("cashflow.services.mercadopago")
+    def test_ticket_preference_idempotency_header_is_string(self, mercado_pago, request_options):
+        preference_api = Mock()
+        preference_api.create.return_value = {
+            "status": 201,
+            "response": {
+                "id": "pref_ticket",
+                "init_point": "https://www.mercadopago.com.ar/checkout/v1/redirect?pref_id=pref_ticket",
+                "sandbox_init_point": "https://sandbox.mercadopago.com.ar/checkout/v1/redirect?pref_id=pref_ticket",
+            },
+        }
+        sdk = Mock()
+        sdk.preference.return_value = preference_api
+        mercado_pago.SDK.return_value = sdk
+        purchase = TicketPurchase.objects.create(
+            graduation_event=self.graduation_event,
+            graduate=self.graduate,
+            quantity=1,
+            email="ana@example.com",
+        )
+
+        MercadoPagoClient().create_ticket_preference(purchase)
+
+        header_value = request_options.call_args.kwargs["custom_headers"]["x-idempotency-key"]
+        self.assertIsInstance(header_value, str)
+        self.assertEqual(header_value, str(purchase.idempotency_key))
 
     @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
     @patch("cashflow.services.MercadoPagoClient")

@@ -153,9 +153,9 @@ class EventBudgetItemAdmin(AuditReadonlyMixin, admin.ModelAdmin):
 
 @admin.register(EventBudgetPayment)
 class EventBudgetPaymentAdmin(AuditReadonlyMixin, admin.ModelAdmin):
-    list_display = ("budget", "status", "amount", "currency", "cash_movement", "mp_preference_id", "mp_payment_id", "updated_at")
+    list_display = ("budget", "payment_purpose", "status", "amount", "currency", "cash_movement", "mp_preference_id", "mp_payment_id", "updated_at")
     search_fields = ("budget__event__name", "mp_preference_id", "mp_payment_id", "status_detail")
-    list_filter = ("status", "currency")
+    list_filter = ("payment_purpose", "status", "currency")
     readonly_fields = AuditReadonlyMixin.readonly_fields + (
         "idempotency_key",
         "mp_preference_id",

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   Alert,
   AppBar,
+  Autocomplete,
   Box,
   Button,
   Card,
@@ -350,6 +351,80 @@ function csvCell(value) {
   const safeValue = value ?? "";
   const normalized = String(safeValue).replace(/"/g, '""');
   return `"${normalized}"`;
+}
+
+function htmlCell(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function printEventBudget(event, budget) {
+  const items = budget?.items || [];
+  const rows = items.map((item) => `
+    <tr>
+      <td>${htmlCell(item.service_name)}</td>
+      <td>${htmlCell(item.category || "-")}</td>
+      <td>${htmlCell(item.is_optional ? "Opcional" : "Base")}</td>
+      <td class="num">${htmlCell(item.quantity || 0)} ${htmlCell(item.unit_label || "")}</td>
+      <td class="num">${htmlCell(money(item.unit_price || 0))}</td>
+      <td class="num">${htmlCell(money(item.total || 0))}</td>
+    </tr>
+  `).join("");
+  const doc = window.open("", "_blank", "noreferrer");
+  if (!doc) return;
+  doc.document.write(`<!doctype html>
+    <html>
+      <head>
+        <title>Presupuesto ${htmlCell(event?.name || "")}</title>
+        <style>
+          body { margin: 36px; color: #17211b; font-family: Inter, Arial, sans-serif; }
+          header { display: flex; justify-content: space-between; gap: 24px; border-bottom: 2px solid #245c63; padding-bottom: 18px; margin-bottom: 24px; }
+          h1 { margin: 0; font-size: 30px; }
+          .muted { color: #66706a; }
+          .total { color: #245c63; text-align: right; }
+          .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 22px 0; }
+          .card { border: 1px solid rgba(23,33,27,.12); border-radius: 10px; padding: 12px; }
+          .card strong { display: block; margin-top: 6px; font-size: 18px; }
+          table { width: 100%; border-collapse: collapse; margin-top: 18px; }
+          th, td { border-bottom: 1px solid rgba(23,33,27,.12); padding: 10px; text-align: left; vertical-align: top; }
+          th { color: #66706a; font-size: 12px; text-transform: uppercase; }
+          .num { text-align: right; white-space: nowrap; }
+          footer { margin-top: 28px; color: #66706a; font-size: 12px; }
+          @media print { body { margin: 20mm; } button { display: none; } }
+        </style>
+      </head>
+      <body>
+        <header>
+          <div>
+            <p class="muted">Caja Moments · Presupuesto</p>
+            <h1>${htmlCell(event?.name || "Evento")}</h1>
+            <p>${htmlCell(event?.client_name || event?.contact_name || "Cliente sin asignar")} · ${htmlCell(formatDate(event?.event_date))} ${htmlCell(formatTime(event?.event_time))}</p>
+          </div>
+          <div class="total">
+            <p class="muted">Total</p>
+            <h1>${htmlCell(money(budget?.grand_total || 0))}</h1>
+            <p>${htmlCell(statusLabel(budget?.status || "DRAFT"))}</p>
+          </div>
+        </header>
+        <section class="cards">
+          <div class="card"><span class="muted">Base</span><strong>${htmlCell(money(budget?.subtotal || 0))}</strong></div>
+          <div class="card"><span class="muted">Opcionales</span><strong>${htmlCell(money(budget?.optional_total || 0))}</strong></div>
+          <div class="card"><span class="muted">Items</span><strong>${htmlCell(items.length)}</strong></div>
+          <div class="card"><span class="muted">Estado</span><strong>${htmlCell(statusLabel(budget?.status || "DRAFT"))}</strong></div>
+        </section>
+        <table>
+          <thead><tr><th>Servicio</th><th>Categoría</th><th>Tipo</th><th class="num">Cantidad</th><th class="num">Unitario</th><th class="num">Total</th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="6" class="muted">Todavía no hay items cargados.</td></tr>`}</tbody>
+        </table>
+        <footer>Documento interno generado desde Caja Moments.</footer>
+      </body>
+    </html>`);
+  doc.document.close();
+  doc.focus();
+  doc.print();
 }
 
 function downloadCsv(filename, columns, rows) {
@@ -946,6 +1021,10 @@ function FlowChart({ income, expense }) {
       })}
     </Box>
   );
+}
+
+function StatusBadge({ value }) {
+  return <Chip label={statusLabel(value)} size="small" color={value === "CLOSED" ? "default" : "primary"} variant="outlined" />;
 }
 
 function Dashboard({ reloadKey }) {
@@ -1896,9 +1975,27 @@ function PeopleScreen({ refs, mutate }) {
                 }, "Asignacion creada");
               }}>
                 <h4 className="section-title">Asignar a evento</h4>
-                <SelectInput label="Evento" value={assignment.event} onChange={(v) => setAssignment({ ...assignment, event: v })} options={refs.events} labelFor={(e) => e.name} required />
-                <SelectInput label="Empleado" value={assignment.employee} onChange={(v) => setAssignment({ ...assignment, employee: v })} options={refs.employees} labelFor={(e) => e.display_name || `${e.first_name} ${e.last_name}`} required />
-                <SelectInput label="Rol" value={assignment.role} onChange={(v) => setAssignment({ ...assignment, role: v })} options={refs.roles} labelFor={(r) => r.name} required />
+                <Autocomplete
+                  options={refs.events}
+                  value={refs.events.find((event) => String(event.id) === String(assignment.event)) || null}
+                  getOptionLabel={(event) => event?.name || ""}
+                  onChange={(_, event) => setAssignment({ ...assignment, event: event?.id || "" })}
+                  renderInput={(params) => <TextField {...params} label="Evento" required sx={{ mb: 1.5 }} />}
+                />
+                <Autocomplete
+                  options={refs.employees}
+                  value={refs.employees.find((employee) => String(employee.id) === String(assignment.employee)) || null}
+                  getOptionLabel={(employee) => employee?.display_name || `${employee?.first_name || ""} ${employee?.last_name || ""}`.trim()}
+                  onChange={(_, employee) => setAssignment({ ...assignment, employee: employee?.id || "" })}
+                  renderInput={(params) => <TextField {...params} label="Empleado" required sx={{ mb: 1.5 }} />}
+                />
+                <Autocomplete
+                  options={refs.roles}
+                  value={refs.roles.find((role) => String(role.id) === String(assignment.role)) || null}
+                  getOptionLabel={(role) => role?.name || ""}
+                  onChange={(_, role) => setAssignment({ ...assignment, role: role?.id || "" })}
+                  renderInput={(params) => <TextField {...params} label="Rol" required sx={{ mb: 1.5 }} />}
+                />
                 <TextInput label="Fecha trabajo" type="date" value={assignment.work_date} onChange={(v) => setAssignment({ ...assignment, work_date: v })} />
                 <TextInput label="Base" type="number" value={assignment.base_amount} onChange={(v) => setAssignment({ ...assignment, base_amount: v })} required />
                 <div className="small text-muted">Base: {thousands(assignment.base_amount)}</div>
@@ -2125,10 +2222,8 @@ function EventsScreen({ refs, mutate, reloadKey }) {
   const [budgetForm, setBudgetForm] = useState({ status: "DRAFT", notes: "", optional_comments: "", internal_notes: "" });
   const [budgetItem, setBudgetItem] = useState(emptyBudgetItemForm());
   const [editingBudgetItem, setEditingBudgetItem] = useState(null);
-  const [eventPayment, setEventPayment] = useState({ account: "", amount: "", payment_method: "Efectivo", description: "", is_deposit: true, budget_item: "", receipt_email: "" });
+  const [eventPayment, setEventPayment] = useState({ account: "", amount: "", payment_method: "Efectivo", description: "", payment_purpose: "DEPOSIT", budget_item: "", receipt_email: "" });
   const [eventDialogs, setEventDialogs] = useState({ create: false, edit: false, payment: false, budget: false, item: false });
-  const [checkoutPreference, setCheckoutPreference] = useState(null);
-  const [paymentLoading, setPaymentLoading] = useState(false);
   const [filters, setFilters] = useState({ search: "", status: "", client: "", event_type: "", internal_status: "", date_from: "", date_to: "" });
   const [overview, setOverview] = useState(null);
   const [loadingOverview, setLoadingOverview] = useState(false);
@@ -2200,10 +2295,18 @@ function EventsScreen({ refs, mutate, reloadKey }) {
   }, [selectedEventId, reloadKey]);
 
   const selectedEvent = refs.events.find((event) => String(event.id) === String(selectedEventId));
-  const latestPayment = checkoutPreference || budget?.latest_payment;
-  const checkoutUrl = latestPayment?.init_point || latestPayment?.preference_init_point || latestPayment?.sandbox_init_point || latestPayment?.preference_sandbox_init_point || null;
+  const financial = overview?.financial || {};
   const selectedBudgetPayments = refs.eventBudgetPayments.filter((payment) => String(payment.event_id) === String(selectedEventId));
   const publicPaymentLink = selectedEvent ? `${window.location.origin}/pagar-evento/${selectedEvent.public_payment_token}/` : "";
+  function openBudgetItemDialog(isOptional = false) {
+    setBudgetItem({
+      ...emptyBudgetItemForm(),
+      category: isOptional ? "Opcional" : "",
+      unit_label: isOptional ? "servicio" : "",
+      is_optional: isOptional,
+    });
+    setEventDialogs({ ...eventDialogs, item: true });
+  }
   function paidForBudgetItem(itemId) {
     return selectedBudgetPayments
       .filter((payment) => String(payment.budget_item) === String(itemId) && payment.status === "approved")
@@ -2211,6 +2314,19 @@ function EventsScreen({ refs, mutate, reloadKey }) {
   }
   function pendingForBudgetItem(item) {
     return Math.max(Number(item?.total || 0) - paidForBudgetItem(item?.id), 0);
+  }
+  function openItemPaymentDialog(item) {
+    setEventPayment((current) => ({
+      ...current,
+      account: "",
+      amount: String(pendingForBudgetItem(item) || item.total || ""),
+      payment_method: current.payment_method || "Efectivo",
+      description: `Cobro ${item.is_optional ? "opcional" : "item"} - ${item.service_name}`,
+      payment_purpose: "BUDGET_ITEM",
+      budget_item: String(item.id),
+      receipt_email: current.receipt_email || overview?.event?.client_email || selectedEvent?.contact_email || "",
+    }));
+    setEventDialogs({ ...eventDialogs, payment: true });
   }
 
   return (
@@ -2222,8 +2338,8 @@ function EventsScreen({ refs, mutate, reloadKey }) {
       >
         Ficha unica con cliente, monto, opcionales, cobranzas, proveedores, personal, caja, comprobantes y auditoria.
       </PageHeader>
-      <div className="row g-3">
-        <div className="col-xl-4">
+      <div className="event360-layout">
+        <aside className="event360-master">
           <ActionDialog open={eventDialogs.create} title="Nuevo evento" onClose={() => setEventDialogs({ ...eventDialogs, create: false })}>
           <form
             onSubmit={(e) => {
@@ -2265,90 +2381,109 @@ function EventsScreen({ refs, mutate, reloadKey }) {
           </form>
           </ActionDialog>
 
-          <div className="work-card mt-3">
+          <div className="work-card event360-filters">
             <h4 className="section-title">Filtros</h4>
             <TextInput label="Buscar" value={filters.search} onChange={(v) => setFilters({ ...filters, search: v })} placeholder="Evento, cliente, salon o contacto" />
-            <div className="row g-2">
-              <div className="col-md-6">
-                <SelectInput label="Estado" value={filters.status} onChange={(v) => setFilters({ ...filters, status: v })} options={eventStatusOptions} labelFor={(option) => option.name} empty="Todos" />
-              </div>
-              <div className="col-md-6">
-                <SelectInput label="Cliente" value={filters.client} onChange={(v) => setFilters({ ...filters, client: v })} options={refs.clients} labelFor={(c) => c.name} empty="Todos" />
-              </div>
-              <div className="col-md-6"><SelectInput label="Tipo" value={filters.event_type} onChange={(v) => setFilters({ ...filters, event_type: v })} options={eventTypeOptions} labelFor={(option) => option.name} empty="Todos" /></div>
-              <div className="col-md-6"><TextInput label="Estado interno" value={filters.internal_status} onChange={(v) => setFilters({ ...filters, internal_status: v })} placeholder="Presupuesto, menu, listo..." /></div>
-              <div className="col-md-6"><TextInput label="Desde" type="date" value={filters.date_from} onChange={(v) => setFilters({ ...filters, date_from: v })} /></div>
-              <div className="col-md-6"><TextInput label="Hasta" type="date" value={filters.date_to} onChange={(v) => setFilters({ ...filters, date_to: v })} /></div>
+            <div className="event360-filter-grid">
+              <SelectInput label="Estado" value={filters.status} onChange={(v) => setFilters({ ...filters, status: v })} options={eventStatusOptions} labelFor={(option) => option.name} empty="Todos" />
+              <SelectInput label="Cliente" value={filters.client} onChange={(v) => setFilters({ ...filters, client: v })} options={refs.clients} labelFor={(c) => c.name} empty="Todos" />
+              <SelectInput label="Tipo" value={filters.event_type} onChange={(v) => setFilters({ ...filters, event_type: v })} options={eventTypeOptions} labelFor={(option) => option.name} empty="Todos" />
+              <TextInput label="Estado interno" value={filters.internal_status} onChange={(v) => setFilters({ ...filters, internal_status: v })} placeholder="Presupuesto, menu, listo..." />
+              <TextInput label="Desde" type="date" value={filters.date_from} onChange={(v) => setFilters({ ...filters, date_from: v })} />
+              <TextInput label="Hasta" type="date" value={filters.date_to} onChange={(v) => setFilters({ ...filters, date_to: v })} />
             </div>
           </div>
-        </div>
 
-        <div className="col-xl-8">
-          <div className="work-card mb-3">
+          <div className="work-card event360-list-card">
             <div className="d-flex justify-content-between align-items-center mb-3">
               <h4 className="section-title mb-0">Agenda de eventos</h4>
               <span className="text-muted small">{filteredEvents.length} evento(s)</span>
             </div>
-            <div className="row g-2">
+            <div className="event360-event-list">
               {filteredEvents.length === 0 && <div className="text-muted text-center py-4">No hay eventos para los filtros elegidos.</div>}
               {filteredEvents.map((item) => (
-                <div className="col-md-6" key={item.id}>
-                  <button
-                    type="button"
-                    className={`w-100 text-start border rounded-4 p-3 bg-white ${String(selectedEventId) === String(item.id) ? "border-dark shadow-sm" : "border-light-subtle"}`}
-                    onClick={() => setSelectedEventId(String(item.id))}
-                  >
-                    <div className="d-flex justify-content-between gap-3">
-                      <div>
-                        <div className="fw-semibold">{item.name}</div>
-                        <div className="text-muted small">{item.client_name || item.contact_name || "Sin cliente asociado"}</div>
-                      </div>
-                      <div className="text-end small">
-                        <div>{formatDate(item.event_date)}</div>
-                        <div>{formatTime(item.event_time)}</div>
-                      </div>
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`event360-event-card ${String(selectedEventId) === String(item.id) ? "active" : ""}`}
+                  onClick={() => setSelectedEventId(String(item.id))}
+                >
+                  <div className="d-flex justify-content-between gap-3">
+                    <div className="min-w-0">
+                      <div className="fw-semibold text-truncate">{item.name}</div>
+                      <div className="text-muted small text-truncate">{item.client_name || item.contact_name || "Sin cliente asociado"}</div>
                     </div>
-                    <div className="small text-muted mt-2">
-                      {eventTypeName(item.event_type)} {item.venue_space ? `· ${item.venue_space}` : ""} {item.internal_status ? `· ${item.internal_status}` : ""}
+                    <div className="text-end small flex-shrink-0">
+                      <div>{formatDate(item.event_date)}</div>
+                      <div>{formatTime(item.event_time)}</div>
                     </div>
-                  </button>
-                </div>
+                  </div>
+                  <div className="event360-event-meta">
+                    <span>{eventTypeName(item.event_type)}</span>
+                    {item.venue_space ? <span>{item.venue_space}</span> : null}
+                    {item.internal_status ? <span>{item.internal_status}</span> : null}
+                  </div>
+                  <StatusBadge value={item.status} />
+                </button>
               ))}
             </div>
           </div>
 
+        </aside>
+
+        <section className="event360-detail">
           {selectedEvent ? (
             <>
-              <div className="row g-3 mb-3">
-                <div className="col-md-3">
-                  <div className="metric-card h-100">
-                    <span className="text-muted small">Total evento</span>
-                    <strong className="d-block">{money(overview?.financial?.event_total || 0)}</strong>
+              <div className="event360-detail-header">
+                <div className="event360-detail-title">
+                  <div>
+                    <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                      <Typography variant="h5">{selectedEvent.name}</Typography>
+                      <StatusBadge value={selectedEvent.status} />
+                    </Stack>
+                    <Typography variant="body2" color="text.secondary">
+                      {selectedEvent.client_name || selectedEvent.contact_name || "Sin cliente"} · {formatDate(selectedEvent.event_date)} {formatTime(selectedEvent.event_time)}
+                    </Typography>
                   </div>
+                  {loadingOverview ? <Chip label="Actualizando..." size="small" variant="outlined" /> : null}
                 </div>
-                <div className="col-md-3">
-                  <div className="metric-card h-100">
-                    <span className="text-muted small">Cobrado</span>
-                    <strong className="d-block">{money(overview?.financial?.paid || 0)}</strong>
-                  </div>
-                </div>
-                <div className="col-md-3">
-                  <div className="metric-card h-100">
-                    <span className="text-muted small">Pendiente</span>
-                    <strong className="d-block">{money(overview?.financial?.pending || 0)}</strong>
-                  </div>
-                </div>
-                  <div className="col-md-3">
-                    <div className="metric-card h-100">
-                      <span className="text-muted small">Resultado</span>
-                      <strong className="d-block">{money(overview?.financial?.result || 0)}</strong>
+                <div className="event360-kpis">
+                  {[
+                    ["Total evento", financial.event_total],
+                    ["Cobrado", financial.paid],
+                    ["Pendiente", financial.pending],
+                    ["Resultado", financial.result],
+                  ].map(([label, value]) => (
+                    <div className="metric-card" key={label}>
+                      <span className="text-muted small">{label}</span>
+                      <strong>{money(value || 0)}</strong>
                     </div>
-                  </div>
+                  ))}
+                </div>
+                <div className="event360-actions">
+                  <Button className="event360-primary-action" onClick={() => {
+                    setEventPayment((current) => ({ ...current, receipt_email: current.receipt_email || overview?.event?.client_email || selectedEvent.contact_email || "" }));
+                    setEventDialogs({ ...eventDialogs, payment: true });
+                  }}>Registrar cobro</Button>
+                  <Button variant="outlined" onClick={() => setEventDialogs({ ...eventDialogs, edit: true })}>Editar ficha</Button>
+                  <Button variant="outlined" onClick={() => navigator.clipboard?.writeText(publicPaymentLink)}>Copiar link</Button>
+                  <Button variant="outlined" onClick={() => window.open(publicPaymentLink, "_blank", "noreferrer")}>Abrir link</Button>
+                  <details className="event360-more-actions">
+                    <summary>Más acciones</summary>
+                    <button
+                      type="button"
+                      className="btn btn-outline-dark"
+                      disabled={selectedEvent.status === "CLOSED"}
+                      onClick={() => {
+                        if (!window.confirm("Cerrar evento y congelar numeros finales?")) return;
+                        mutate(() => api(`/events/${selectedEventId}/close/`, { method: "POST", body: JSON.stringify({}) }), "Evento cerrado");
+                      }}
+                    >
+                      Cerrar evento
+                    </button>
+                  </details>
+                </div>
               </div>
-
-              <ActionCard title="Ficha del evento" subtitle={loadingOverview ? "Actualizando resumen..." : `${selectedEvent.client_name || selectedEvent.contact_name || "Sin cliente"} · ${statusLabel(selectedEvent.status)}`}>
-                <Button variant="outlined" onClick={() => setEventDialogs({ ...eventDialogs, edit: true })}>Editar ficha</Button>
-              </ActionCard>
               <ActionDialog open={eventDialogs.edit} title="Editar ficha del evento" onClose={() => setEventDialogs({ ...eventDialogs, edit: false })} maxWidth="lg">
                 <form
                   onSubmit={(e) => {
@@ -2398,39 +2533,6 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                 </form>
               </ActionDialog>
 
-              <div className="work-card mb-3">
-                <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-                  <div>
-                    <h4 className="section-title mb-0">Cobros y cierre</h4>
-                    <div className="text-muted small">Seña, entregas, link publico y congelado final del evento.</div>
-                  </div>
-                  <button
-                    type="button"
-                    className="btn btn-outline-dark"
-                    disabled={selectedEvent.status === "CLOSED"}
-                    onClick={() => {
-                      if (!window.confirm("Cerrar evento y congelar numeros finales?")) return;
-                      mutate(() => api(`/events/${selectedEventId}/close/`, { method: "POST", body: JSON.stringify({}) }), "Evento cerrado");
-                    }}
-                  >
-                    Cerrar evento
-                  </button>
-                </div>
-                <div className="row g-3">
-                  <div className="d-none">
-                    <TextInput label="Link de pago para cliente" value={publicPaymentLink} onChange={() => {}} />
-                    <button type="button" className="btn btn-sm btn-outline-dark" onClick={() => navigator.clipboard?.writeText(publicPaymentLink)}>Copiar link</button>
-                  </div>
-                  <div className="col-lg-12">
-                    <ActionCard title="Registrar ingreso" subtitle="Seña, entrega o cobro asociado a un item.">
-                      <Button onClick={() => {
-                        setEventPayment((current) => ({ ...current, receipt_email: current.receipt_email || overview?.event?.client_email || selectedEvent.contact_email || "" }));
-                        setEventDialogs({ ...eventDialogs, payment: true });
-                      }}>Registrar cobro</Button>
-                    </ActionCard>
-                  </div>
-                </div>
-              </div>
               <ActionDialog open={eventDialogs.payment} title="Registrar cobro del evento" onClose={() => setEventDialogs({ ...eventDialogs, payment: false })}>
                     <form
                       onSubmit={(e) => {
@@ -2440,7 +2542,7 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                             method: "POST",
                             body: JSON.stringify(eventPayment),
                           });
-                          setEventPayment({ account: "", amount: "", payment_method: "Efectivo", description: "", is_deposit: true, budget_item: "", receipt_email: "" });
+                          setEventPayment({ account: "", amount: "", payment_method: "Efectivo", description: "", payment_purpose: "DEPOSIT", budget_item: "", receipt_email: "" });
                           setEventDialogs((state) => ({ ...state, payment: false }));
                         }, "Cobro registrado");
                       }}
@@ -2451,22 +2553,30 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                         <div className="col-md-4"><TextInput label="Medio" value={eventPayment.payment_method} onChange={(v) => setEventPayment({ ...eventPayment, payment_method: v })} /></div>
                         <div className="col-md-6">
                           <SelectInput
-                            label="Item"
+                            label="Tipo de pago"
+                            value={eventPayment.payment_purpose}
+                            onChange={(v) => setEventPayment({ ...eventPayment, payment_purpose: v || "DEPOSIT", budget_item: v === "BUDGET_ITEM" ? eventPayment.budget_item : "" })}
+                            options={[
+                              { id: "DEPOSIT", name: "Seña" },
+                              { id: "ADVANCE", name: "Adelanto" },
+                              { id: "BUDGET_ITEM", name: "Servicio / opcional" },
+                            ]}
+                            labelFor={(option) => option.name}
+                            required
+                          />
+                        </div>
+                        <div className="col-md-6">
+                          <SelectInput
+                            label="Servicio / opcional"
                             value={eventPayment.budget_item}
                             onChange={(v) => {
                               const item = (budget?.items || []).find((row) => String(row.id) === String(v));
-                              setEventPayment({ ...eventPayment, budget_item: v, amount: item ? String(pendingForBudgetItem(item) || item.total || "") : eventPayment.amount });
+                              setEventPayment({ ...eventPayment, payment_purpose: v ? "BUDGET_ITEM" : eventPayment.payment_purpose, budget_item: v, amount: item ? String(pendingForBudgetItem(item) || item.total || "") : eventPayment.amount });
                             }}
-                            options={budget?.items || []}
-                            labelFor={(item) => `${item.service_name} · pendiente ${money(pendingForBudgetItem(item))}`}
-                            empty="Pago general / seña"
+                            options={(budget?.items || []).filter((item) => pendingForBudgetItem(item) > 0)}
+                            labelFor={(item) => `${item.is_optional ? "Opcional" : "Base"} · ${item.service_name} · pendiente ${money(pendingForBudgetItem(item))}`}
+                            empty="Sin servicio asociado"
                           />
-                        </div>
-                        <div className="col-md-6 d-flex align-items-end">
-                          <div className="form-check mb-2">
-                            <input className="form-check-input" id="event-payment-deposit" type="checkbox" checked={eventPayment.is_deposit} onChange={(e) => setEventPayment({ ...eventPayment, is_deposit: e.target.checked })} />
-                            <label className="form-check-label" htmlFor="event-payment-deposit">Es seña</label>
-                          </div>
                         </div>
                         <div className="col-12"><TextInput label="Descripcion" value={eventPayment.description} onChange={(v) => setEventPayment({ ...eventPayment, description: v })} /></div>
                         <div className="col-12"><TextInput label="Email comprobante" type="email" value={eventPayment.receipt_email} onChange={(v) => setEventPayment({ ...eventPayment, receipt_email: v })} /></div>
@@ -2606,8 +2716,10 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                     <div className="text-muted small">Servicios, opcionales y total del evento.</div>
                   </div>
                   <Stack direction="row" spacing={1}>
+                    <Button variant="outlined" disabled={!budget?.id} onClick={() => printEventBudget(selectedEvent, budget)}>Imprimir</Button>
                     <Button variant="outlined" disabled={!budget?.id} onClick={() => setEventDialogs({ ...eventDialogs, budget: true })}>Editar cabecera</Button>
-                    <Button disabled={!budget?.id} onClick={() => setEventDialogs({ ...eventDialogs, item: true })}>Agregar item</Button>
+                    <Button variant="outlined" disabled={!budget?.id} onClick={() => openBudgetItemDialog(false)}>Agregar base</Button>
+                    <Button disabled={!budget?.id} onClick={() => openBudgetItemDialog(true)}>Agregar opcional</Button>
                     <Chip label={loadingBudget ? "Cargando..." : `${budget?.item_count || 0} item(s)`} variant="outlined" />
                   </Stack>
                 </div>
@@ -2634,47 +2746,6 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                     <div className="metric-card h-100">
                       <span className="text-muted small">Estado presupuesto</span>
                       <strong className="d-block">{statusLabel(budget?.status || "DRAFT")}</strong>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="border rounded-4 p-3 mb-3">
-                  <div className="d-flex flex-wrap justify-content-between align-items-center gap-2">
-                    <div>
-                      <h4 className="section-title mb-1">Pago online</h4>
-                      <div className="text-muted small">
-                        {latestPayment ? `Estado: ${statusLabel(latestPayment.status)} · ${money(latestPayment.amount || budget?.grand_total || 0)}` : "Sin preferencia generada para este presupuesto."}
-                      </div>
-                    </div>
-                    <div className="d-flex flex-wrap gap-2">
-                      {checkoutUrl ? (
-                        <a className="btn btn-outline-dark" href={checkoutUrl} target="_blank" rel="noreferrer">
-                          Abrir checkout
-                        </a>
-                      ) : null}
-                      <button
-                        type="button"
-                        className="btn btn-earth"
-                        disabled={!budget?.id || paymentLoading || Number(budget?.grand_total || 0) <= 0}
-                        onClick={() => {
-                          if (!budget?.id) return;
-                          setPaymentLoading(true);
-                          mutate(
-                            async () => {
-                              const preference = await api("/event-budget-payments/create-preference/", {
-                                method: "POST",
-                                body: JSON.stringify({ budget: budget.id }),
-                              });
-                              setCheckoutPreference(preference);
-                              const url = preference.init_point || preference.sandbox_init_point;
-                              if (url) window.open(url, "_blank", "noreferrer");
-                            },
-                            "Preferencia de Mercado Pago preparada",
-                          ).finally(() => setPaymentLoading(false));
-                        }}
-                      >
-                        {paymentLoading ? "Preparando..." : "Preparar pago"}
-                      </button>
                     </div>
                   </div>
                 </div>
@@ -2725,7 +2796,7 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                     </form>
                     </ActionDialog>
 
-                    <ActionDialog open={eventDialogs.item} title="Agregar item al presupuesto" onClose={() => setEventDialogs({ ...eventDialogs, item: false })}>
+                    <ActionDialog open={eventDialogs.item} title={budgetItem.is_optional ? "Agregar opcional / servicio extra" : "Agregar item base"} onClose={() => setEventDialogs({ ...eventDialogs, item: false })}>
                     <form
                       onSubmit={(e) => {
                         e.preventDefault();
@@ -2745,12 +2816,12 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                             setBudgetItem(emptyBudgetItemForm());
                             setEventDialogs((state) => ({ ...state, item: false }));
                           },
-                          "Item de presupuesto agregado",
+                          budgetItem.is_optional ? "Opcional agregado" : "Item de presupuesto agregado",
                         );
                       }}
                     >
-                      <h4 className="section-title">Nuevo item</h4>
-                      <TextInput label="Servicio" value={budgetItem.service_name} onChange={(v) => setBudgetItem({ ...budgetItem, service_name: v })} required />
+                      <h4 className="section-title">{budgetItem.is_optional ? "Nuevo opcional" : "Nuevo item"}</h4>
+                      <TextInput label={budgetItem.is_optional ? "Servicio extra" : "Servicio"} value={budgetItem.service_name} onChange={(v) => setBudgetItem({ ...budgetItem, service_name: v })} required />
                       <div className="row g-2">
                         <div className="col-md-6"><TextInput label="Categoria" value={budgetItem.category} onChange={(v) => setBudgetItem({ ...budgetItem, category: v })} /></div>
                         <div className="col-md-6"><TextInput label="Unidad" value={budgetItem.unit_label} onChange={(v) => setBudgetItem({ ...budgetItem, unit_label: v })} placeholder="personas, fijo, horas..." /></div>
@@ -2760,7 +2831,7 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                       </div>
                       <div className="form-check mt-2">
                         <input className="form-check-input" id="budget-item-optional" type="checkbox" checked={budgetItem.is_optional} onChange={(e) => setBudgetItem({ ...budgetItem, is_optional: e.target.checked })} />
-                        <label className="form-check-label" htmlFor="budget-item-optional">Es opcional</label>
+                        <label className="form-check-label" htmlFor="budget-item-optional">Es opcional / extra</label>
                       </div>
                       <TextAreaInput label="Notas" value={budgetItem.notes} onChange={(v) => setBudgetItem({ ...budgetItem, notes: v })} rows={2} />
                       <button className="btn btn-earth w-100 mt-2" disabled={!budget?.id}>Agregar item</button>
@@ -2802,7 +2873,10 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                                       }, "Checkout del item preparado");
                                     }}
                                   >
-                                    MP
+                                    Link MP
+                                  </Button>
+                                  <Button size="small" variant="outlined" onClick={() => openItemPaymentDialog(row)}>
+                                    Cobro manual
                                   </Button>
                                   <Button
                                     size="small"
@@ -2969,19 +3043,12 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                                     }, "Checkout del item preparado");
                                   }}
                                 >
-                                  MP item
+                                  Link MP
                                 </button>
                                 <button
                                   className="btn btn-sm btn-outline-dark"
                                   type="button"
-                                  onClick={() => {
-                                    const account = window.prompt("ID de cuenta para registrar el cobro manual:");
-                                    if (!account) return;
-                                    mutate(
-                                      () => api(`/event-budget-items/${item.id}/pay-manual/`, { method: "POST", body: JSON.stringify({ account }) }),
-                                      "Cobro del item registrado",
-                                    );
-                                  }}
+                                  onClick={() => openItemPaymentDialog(item)}
                                 >
                                   Cobro manual
                                 </button>
@@ -3051,7 +3118,7 @@ function EventsScreen({ refs, mutate, reloadKey }) {
               <p className="text-muted mb-0">Crea un evento o elegi uno de la agenda para completar su ficha.</p>
             </div>
           )}
-        </div>
+        </section>
       </div>
     </>
   );
@@ -3237,6 +3304,23 @@ function PublicGraduationPage({ token }) {
   const [graduates, setGraduates] = useState([]);
   const [form, setForm] = useState({ graduate: "", quantity: "1", email: "" });
   const [status, setStatus] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const ticketPrice = numberValue(eventData?.current_price || eventData?.price_per_ticket);
+  const maxTickets = eventData?.max_tickets_per_graduate ? Number(eventData.max_tickets_per_graduate) : null;
+  const ticketQuantity = Math.max(0, Math.floor(numberValue(form.quantity)));
+  const ticketTotal = ticketPrice * ticketQuantity;
+  const selectedGraduate = graduates.find((graduate) => String(graduate.id) === String(form.graduate));
+  const canSubmit = Boolean(form.graduate && form.email && ticketTotal > 0);
+  const steps = [
+    { label: "Egresado", done: Boolean(form.graduate) },
+    { label: "Cantidad", done: ticketQuantity > 0 },
+    { label: "Email", done: Boolean(form.email) },
+  ];
+
+  function setQuantity(value) {
+    const next = Math.max(1, Math.floor(numberValue(value) || 1));
+    setForm({ ...form, quantity: String(maxTickets ? Math.min(next, maxTickets) : next) });
+  }
 
   useEffect(() => {
     api(`/graduation-events/${token}/public/`, { token: "" }).then(setEventData).catch((error) => setStatus({ type: "error", message: prettifyErrorMessage(error.message) }));
@@ -3250,6 +3334,8 @@ function PublicGraduationPage({ token }) {
 
   async function submit(event) {
     event.preventDefault();
+    if (!canSubmit || submitting) return;
+    setSubmitting(true);
     try {
       const purchase = await api("/ticket-purchases/create-preference/", {
         method: "POST",
@@ -3258,27 +3344,122 @@ function PublicGraduationPage({ token }) {
       });
       setStatus({ type: "success", message: "Resumen enviado. Abriendo Mercado Pago..." });
       const url = purchase.init_point || purchase.sandbox_init_point;
-      if (url) window.location.href = url;
+      if (url) {
+        window.location.href = url;
+      } else {
+        setStatus({ type: "error", message: "No pudimos abrir Mercado Pago. Intenta de nuevo." });
+        setSubmitting(false);
+      }
     } catch (error) {
       setStatus({ type: "error", message: prettifyErrorMessage(error.message) });
+      setSubmitting(false);
     }
   }
 
   return (
-    <div className="app-shell public-shell">
+    <div className="app-shell public-shell purchase-shell">
       <main className="main-stage">
-        <section className="hero-card">
-          <div className="pill mb-3">Caja Moments</div>
-          <h2 className="mb-2">{eventData?.event_name || "Egresados"}</h2>
-          <p className="text-muted">{eventData ? `Tarjeta: ${money(eventData.price_per_ticket)}` : "Cargando evento..."}</p>
-          <AlertLine status={status} />
-          <form className="work-card" onSubmit={submit}>
-            <SelectInput label="Egresado" value={form.graduate} onChange={(v) => setForm({ ...form, graduate: v })} options={graduates} labelFor={(g) => g.display_name} required />
-            <TextInput label="Cantidad de tarjetas" type="number" value={form.quantity} onChange={(v) => setForm({ ...form, quantity: v })} required />
-            <TextInput label="Email" type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} required />
-            <button className="btn btn-earth w-100 mt-2">Continuar a Mercado Pago</button>
-          </form>
+        <section className="purchase-hero">
+          <div>
+            <div className="pill mb-3">Caja Moments</div>
+            <h1>{eventData?.event_name || "Compra de tarjetas"}</h1>
+            <p>{eventData ? `Tarjeta ${money(ticketPrice)}${eventData.event_date ? ` · ${formatDate(eventData.event_date)}` : ""}` : "Cargando evento..."}</p>
+          </div>
+          <div className="purchase-total-chip">
+            <span>Total</span>
+            <strong>{money(ticketTotal)}</strong>
+          </div>
         </section>
+
+        <div className="purchase-steps" aria-label="Progreso de compra">
+          {steps.map((step, index) => (
+            <div className={`purchase-step ${step.done ? "done" : ""}`} key={step.label}>
+              <span>{step.done ? "OK" : index + 1}</span>
+              <strong>{step.label}</strong>
+            </div>
+          ))}
+        </div>
+
+        <div className="purchase-grid">
+          <form className="purchase-panel" onSubmit={submit}>
+            <AlertLine status={status} />
+            <div className="purchase-section">
+              <span className="purchase-kicker">1. Nombre del egresado</span>
+              <Autocomplete
+                options={graduates}
+                value={selectedGraduate || null}
+                onChange={(_event, graduate) => setForm({ ...form, graduate: graduate?.id ? String(graduate.id) : "" })}
+                getOptionLabel={(graduate) => graduate?.display_name || ""}
+                isOptionEqualToValue={(option, value) => String(option.id) === String(value.id)}
+                noOptionsText="No encontramos ese nombre"
+                renderInput={(params) => <TextField {...params} label="Buscar egresado" required />}
+              />
+              <div className={`selected-graduate ${selectedGraduate ? "selected" : ""}`}>
+                <span>{selectedGraduate ? "Seleccionado" : "Esperando seleccion"}</span>
+                <strong>{selectedGraduate?.display_name || "Elegí el nombre de la lista"}</strong>
+              </div>
+            </div>
+
+            <div className="purchase-section">
+              <span className="purchase-kicker">2. Cantidad de tarjetas</span>
+              <div className="quantity-picker">
+                <button type="button" onClick={() => setQuantity(ticketQuantity - 1)} disabled={ticketQuantity <= 1}>-</button>
+                <input
+                  aria-label="Cantidad de tarjetas"
+                  className="form-control"
+                  min="1"
+                  max={maxTickets || undefined}
+                  step="1"
+                  type="number"
+                  value={form.quantity}
+                  onChange={(event) => setQuantity(event.target.value)}
+                />
+                <button type="button" onClick={() => setQuantity(ticketQuantity + 1)} disabled={Boolean(maxTickets && ticketQuantity >= maxTickets)}>+</button>
+              </div>
+              <p className="purchase-note">
+                {maxTickets ? `Máximo configurado por egresado: ${maxTickets} tarjetas.` : "La cantidad se confirma antes de abrir Mercado Pago."}
+              </p>
+            </div>
+
+            <div className="purchase-section">
+              <span className="purchase-kicker">3. Comprobante</span>
+              <TextInput label="Email" type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} required />
+            </div>
+
+            <button className="btn btn-earth w-100 purchase-pay-button" disabled={!canSubmit || submitting}>
+              {submitting ? "Abriendo Mercado Pago..." : `Pagar ${money(ticketTotal)} con Mercado Pago`}
+            </button>
+          </form>
+
+          <aside className="purchase-summary" aria-label="Resumen de compra">
+            <div>
+              <span className="purchase-kicker">Resumen</span>
+              <h2>{eventData?.event_name || "Evento"}</h2>
+            </div>
+            <div className="summary-lines">
+              <div>
+                <span>Tarjeta</span>
+                <strong>{money(ticketPrice)}</strong>
+              </div>
+              <div>
+                <span>Cantidad</span>
+                <strong>{ticketQuantity || "-"}</strong>
+              </div>
+              <div>
+                <span>Subtotal</span>
+                <strong>{money(ticketTotal)}</strong>
+              </div>
+              <div className="summary-total">
+                <span>Total</span>
+                <strong>{money(ticketTotal)}</strong>
+              </div>
+            </div>
+            <div className="summary-footnote">
+              <strong>Pago seguro por Mercado Pago</strong>
+              <span>Después de continuar, vas a elegir medio de pago y cuotas disponibles.</span>
+            </div>
+          </aside>
+        </div>
       </main>
     </div>
   );
@@ -3286,8 +3467,9 @@ function PublicGraduationPage({ token }) {
 
 function PublicEventPaymentPage({ token }) {
   const [eventData, setEventData] = useState(null);
-  const [form, setForm] = useState({ budget_item: "", amount: "", email: "" });
+  const [form, setForm] = useState({ concept: "DEPOSIT", amount: "", email: "" });
   const [status, setStatus] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
 
   function load() {
     api(`/event-payments/${token}/public/`, { token: "" })
@@ -3301,58 +3483,138 @@ function PublicEventPaymentPage({ token }) {
 
   async function submit(event) {
     event.preventDefault();
+    if (submitting) return;
+    setSubmitting(true);
     try {
       const payment = await api(`/event-payments/${token}/create-preference/`, {
         method: "POST",
-        body: JSON.stringify(form.budget_item ? { budget_item: form.budget_item, email: form.email } : { amount: form.amount, email: form.email }),
+        body: JSON.stringify(
+          String(form.concept).startsWith("item:")
+            ? { budget_item: String(form.concept).slice(5), email: form.email, payment_purpose: "BUDGET_ITEM" }
+            : { amount: form.amount, email: form.email, payment_purpose: form.concept },
+        ),
         token: "",
       });
       setStatus({ type: "success", message: "Abriendo Mercado Pago..." });
       const url = payment.init_point || payment.sandbox_init_point;
-      if (url) window.location.href = url;
+      if (url) {
+        window.location.href = url;
+      } else {
+        setStatus({ type: "error", message: "No pudimos abrir Mercado Pago. Intenta de nuevo." });
+        setSubmitting(false);
+      }
     } catch (error) {
       setStatus({ type: "error", message: prettifyErrorMessage(error.message) });
+      setSubmitting(false);
     }
   }
 
   const items = eventData?.items || [];
-  const selectedItem = items.find((item) => String(item.id) === String(form.budget_item));
+  const payableItems = items.filter((item) => Number(item.pending || item.total || 0) > 0);
+  const paymentOptions = [
+    ...(eventData?.can_pay_deposit === false ? [] : [{ id: "DEPOSIT", name: "Seña" }]),
+    { id: "ADVANCE", name: "Adelanto" },
+    ...payableItems.map((item) => ({
+      id: `item:${item.id}`,
+      name: `${item.is_optional ? "Opcional" : "Servicio"} · ${item.service_name} · ${money(item.pending || item.total)}`,
+      item,
+    })),
+  ];
+  const conceptExists = paymentOptions.some((option) => option.id === form.concept);
+  const firstConcept = paymentOptions[0]?.id || "ADVANCE";
+
+  useEffect(() => {
+    if (eventData && !conceptExists) {
+      setForm((current) => ({ ...current, concept: firstConcept, amount: "" }));
+    }
+  }, [eventData, conceptExists, firstConcept]);
+
+  const selectedOption = paymentOptions.find((option) => option.id === form.concept);
+  const selectedItem = selectedOption?.item;
+  const customAmount = numberValue(form.amount);
+  const paymentAmount = selectedItem ? numberValue(selectedItem.pending || selectedItem.total) : customAmount;
+  const canSubmit = Boolean(selectedOption && form.email && paymentAmount > 0);
+  const steps = [
+    { label: "Concepto", done: Boolean(form.concept && (selectedItem || customAmount > 0)) },
+    { label: "Email", done: Boolean(form.email) },
+    { label: "Confirmar", done: canSubmit },
+  ];
 
   return (
-    <div className="app-shell public-shell">
+    <div className="app-shell public-shell purchase-shell">
       <main className="main-stage">
-        <section className="hero-card">
-          <div className="pill mb-3">Caja Moments</div>
-          <h2 className="mb-2">{eventData?.event?.name || "Pago de evento"}</h2>
-          <p className="text-muted">
-            {eventData ? `${eventData.event.client_name || "Cliente"} · Pendiente ${money(eventData.financial?.pending || 0)}` : "Cargando evento..."}
-          </p>
-          <AlertLine status={status} />
-          <div className="row g-3 mb-3">
-            <div className="col-md-4"><div className="metric-card"><span className="text-muted small">Total</span><strong>{money(eventData?.financial?.event_total || 0)}</strong></div></div>
-            <div className="col-md-4"><div className="metric-card"><span className="text-muted small">Pagado</span><strong>{money(eventData?.financial?.paid || 0)}</strong></div></div>
-            <div className="col-md-4"><div className="metric-card"><span className="text-muted small">Pendiente</span><strong>{money(eventData?.financial?.pending || 0)}</strong></div></div>
+        <section className="purchase-hero">
+          <div>
+            <div className="pill mb-3">Caja Moments</div>
+            <h1>{eventData?.event?.name || "Pago de evento"}</h1>
+            <p>{eventData ? `${eventData.event.client_name || "Cliente"} · Pendiente ${money(eventData.financial?.pending || 0)}` : "Cargando evento..."}</p>
           </div>
-          <form className="work-card" onSubmit={submit}>
-            <SelectInput
-              label="Que queres pagar"
-              value={form.budget_item}
-              onChange={(v) => setForm({ ...form, budget_item: v, amount: "" })}
-              options={items.filter((item) => Number(item.pending || item.total || 0) > 0)}
-              labelFor={(item) => `${item.is_optional ? "Opcional" : "Evento"} · ${item.service_name} · ${money(item.pending || item.total)}`}
-              empty="Seña u otro importe"
-            />
-            <TextInput label="Email para comprobante" type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} required />
-            {!form.budget_item ? (
-              <TextInput label="Importe" type="number" value={form.amount} onChange={(v) => setForm({ ...form, amount: v })} required />
-            ) : (
-              <div className="text-muted small mb-2">
-                Se va a generar un checkout por {money(selectedItem?.pending || selectedItem?.total || 0)}.
-              </div>
-            )}
-            <button className="btn btn-earth w-100 mt-2" disabled={!form.budget_item && Number(form.amount || 0) <= 0}>Continuar a Mercado Pago</button>
-          </form>
+          <div className="purchase-total-chip">
+            <span>A pagar</span>
+            <strong>{money(paymentAmount)}</strong>
+          </div>
         </section>
+
+        <div className="purchase-steps" aria-label="Progreso de pago">
+          {steps.map((step, index) => (
+            <div className={`purchase-step ${step.done ? "done" : ""}`} key={step.label}>
+              <span>{step.done ? "OK" : index + 1}</span>
+              <strong>{step.label}</strong>
+            </div>
+          ))}
+        </div>
+
+        <div className="purchase-grid">
+          <form className="purchase-panel" onSubmit={submit}>
+            <AlertLine status={status} />
+            <div className="purchase-section">
+              <span className="purchase-kicker">1. Elegí qué querés pagar</span>
+              <SelectInput
+                label="Concepto"
+                value={form.concept}
+                onChange={(v) => setForm({ ...form, concept: v || "DEPOSIT", amount: "" })}
+                options={paymentOptions}
+                labelFor={(option) => option.name}
+                empty="Elegí qué pagar"
+              />
+              {!selectedItem ? (
+                <TextInput label="Importe" type="number" value={form.amount} onChange={(v) => setForm({ ...form, amount: v })} required />
+              ) : (
+                <div className="selected-graduate selected">
+                  <span>Seleccionado</span>
+                  <strong>{selectedItem?.service_name} · {money(paymentAmount)}</strong>
+                </div>
+              )}
+            </div>
+
+            <div className="purchase-section">
+              <span className="purchase-kicker">2. Email para comprobante</span>
+              <TextInput label="Email" type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} required />
+            </div>
+
+            <button className="btn btn-earth w-100 purchase-pay-button" disabled={!canSubmit || submitting}>
+              {submitting ? "Abriendo Mercado Pago..." : `Pagar ${money(paymentAmount)} con Mercado Pago`}
+            </button>
+          </form>
+
+          <aside className="purchase-summary" aria-label="Resumen de pago">
+            <div>
+              <span className="purchase-kicker">Resumen</span>
+              <h2>{eventData?.event?.name || "Evento"}</h2>
+            </div>
+            <div className="summary-lines">
+              <div><span>Total evento</span><strong>{money(eventData?.financial?.event_total || 0)}</strong></div>
+              <div><span>Pagado</span><strong>{money(eventData?.financial?.paid || 0)}</strong></div>
+              <div><span>Pendiente</span><strong>{money(eventData?.financial?.pending || 0)}</strong></div>
+              <div><span>Concepto</span><strong>{selectedItem?.service_name || selectedOption?.name || "Seña"}</strong></div>
+              <div className="summary-total"><span>A pagar</span><strong>{money(paymentAmount)}</strong></div>
+            </div>
+            <div className="summary-footnote">
+              <strong>Pago seguro por Mercado Pago</strong>
+              <span>Después de continuar, vas a elegir medio de pago y cuotas disponibles.</span>
+            </div>
+          </aside>
+        </div>
       </main>
     </div>
   );
