@@ -522,6 +522,152 @@ body {
   background: #17211b;
 }
 
+.min-w-0 {
+  min-width: 0;
+}
+
+.event360-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 360px) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.event360-master,
+.event360-detail {
+  min-width: 0;
+}
+
+.event360-master {
+  position: sticky;
+  top: 84px;
+  display: grid;
+  gap: 1rem;
+}
+
+.event360-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.event360-event-list {
+  display: grid;
+  gap: 0.75rem;
+  max-height: min(62vh, 720px);
+  overflow-y: auto;
+  padding-right: 0.15rem;
+}
+
+.event360-event-card {
+  width: 100%;
+  min-height: 44px;
+  padding: 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #ffffff;
+  text-align: left;
+}
+
+.event360-event-card.active {
+  border-color: var(--teal);
+  box-shadow: inset 4px 0 0 var(--teal), 0 10px 22px rgba(23, 33, 27, 0.08);
+}
+
+.event360-event-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.55rem 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.event360-event-meta span {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.event360-detail-header {
+  position: sticky;
+  top: 72px;
+  z-index: 5;
+  display: grid;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 12px 34px rgba(23, 33, 27, 0.08);
+  backdrop-filter: blur(12px);
+}
+
+.event360-detail-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.event360-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+}
+
+.event360-kpis .metric-card {
+  padding: 0.8rem;
+}
+
+.event360-kpis .metric-card strong {
+  font-size: 1.15rem;
+}
+
+.event360-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  align-items: center;
+}
+
+.event360-actions .MuiButton-root,
+.event360-more-actions summary,
+.event360-more-actions button,
+.event360-event-card {
+  min-height: 44px;
+}
+
+.event360-more-actions {
+  position: relative;
+}
+
+.event360-more-actions summary {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 0.9rem;
+  border: 1px solid rgba(36, 92, 99, 0.35);
+  border-radius: 10px;
+  color: var(--teal);
+  cursor: pointer;
+  font-weight: 700;
+  list-style: none;
+}
+
+.event360-more-actions summary::-webkit-details-marker {
+  display: none;
+}
+
+.event360-more-actions[open] button {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.35rem);
+  z-index: 10;
+  width: max-content;
+  background: #ffffff;
+  box-shadow: 0 12px 24px rgba(23, 33, 27, 0.12);
+}
+
 @media (max-width: 960px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -562,6 +708,21 @@ body {
 
   .purchase-summary {
     position: static;
+  }
+
+  .event360-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .event360-master,
+  .event360-detail-header {
+    position: static;
+  }
+
+  .event360-event-list {
+    max-height: none;
+    overflow-y: visible;
+    padding-right: 0;
   }
 }
 
@@ -621,5 +782,29 @@ body {
 
   .quantity-picker button {
     width: 44px;
+  }
+
+  .event360-filter-grid,
+  .event360-kpis {
+    grid-template-columns: 1fr;
+  }
+
+  .event360-detail-title,
+  .event360-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .event360-primary-action,
+  .event360-actions .MuiButton-root,
+  .event360-more-actions,
+  .event360-more-actions summary {
+    width: 100%;
+  }
+
+  .event360-more-actions[open] button {
+    position: static;
+    width: 100%;
+    margin-top: 0.45rem;
   }
 }

@@ -461,6 +461,49 @@ def _extract_mp_error(body, fallback_message):
 
 
 EVENT_BASE_ITEM_NAME = "Evento"
+ACTIVE_BUDGET_PAYMENT_STATUSES = [
+    EventBudgetPayment.Status.PENDING,
+    EventBudgetPayment.Status.IN_PROCESS,
+    EventBudgetPayment.Status.APPROVED,
+]
+
+
+def _payment_purpose_for(budget_item=None, payment_purpose=None, is_deposit=False):
+    if budget_item:
+        return EventBudgetPayment.Purpose.BUDGET_ITEM
+    if payment_purpose == EventBudgetPayment.Purpose.BUDGET_ITEM:
+        raise ValidationError("Elegi un servicio para pagar.")
+    if payment_purpose in EventBudgetPayment.Purpose.values:
+        return payment_purpose
+    return EventBudgetPayment.Purpose.DEPOSIT if is_deposit else EventBudgetPayment.Purpose.ADVANCE
+
+
+def budget_purpose_is_registered(budget, payment_purpose):
+    return budget.payments.filter(
+        status__in=ACTIVE_BUDGET_PAYMENT_STATUSES,
+        payment_purpose=payment_purpose,
+        budget_item__isnull=True,
+    ).exists()
+
+
+def _approved_budget_item_paid_amount(budget_item):
+    return budget_item.payments.filter(status=EventBudgetPayment.Status.APPROVED).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+
+
+def _budget_payment_label(payment):
+    if payment.payment_purpose == EventBudgetPayment.Purpose.DEPOSIT:
+        return "Seña de evento"
+    if payment.payment_purpose == EventBudgetPayment.Purpose.BUDGET_ITEM and payment.budget_item_id:
+        return f"Cobro servicio - {payment.budget_item.service_name}"
+    return "Adelanto de evento"
+
+
+def _budget_payment_code_defaults(payment_purpose):
+    if payment_purpose == EventBudgetPayment.Purpose.DEPOSIT:
+        return "SEÑA_EVENTO", "Seña de evento"
+    if payment_purpose == EventBudgetPayment.Purpose.BUDGET_ITEM:
+        return "COBRO_EVENTO", "Cobro de servicio"
+    return "ADELANTO_EVENTO", "Adelanto de evento"
 
 
 def _budget_payment_amount(budget, budget_item=None, amount=None):
@@ -472,18 +515,24 @@ def _budget_payment_amount(budget, budget_item=None, amount=None):
     if budget_item:
         if budget_item.budget_id != budget.id:
             raise ValidationError("El item no pertenece al presupuesto.")
-        return budget_item.total
+        pending = budget_item.total - _approved_budget_item_paid_amount(budget_item)
+        if pending <= 0:
+            raise ValidationError("Este servicio ya esta pagado.")
+        return pending
     return budget.total()
 
 
 @transaction.atomic
-def create_event_budget_payment_preference(budget, budget_item=None, amount=None, receipt_email=""):
+def create_event_budget_payment_preference(budget, budget_item=None, amount=None, receipt_email="", payment_purpose=None):
     if not isinstance(budget, EventBudget):
         budget = EventBudget.objects.select_for_update().select_related("event", "event__client").get(pk=budget)
     else:
         budget = EventBudget.objects.select_for_update().select_related("event", "event__client").get(pk=budget.pk)
     if budget_item and not isinstance(budget_item, EventBudgetItem):
         budget_item = EventBudgetItem.objects.select_related("budget").get(pk=budget_item)
+    purpose = _payment_purpose_for(budget_item=budget_item, payment_purpose=payment_purpose)
+    if purpose == EventBudgetPayment.Purpose.DEPOSIT and budget_purpose_is_registered(budget, purpose):
+        raise ValidationError("La seña ya esta registrada.")
     amount = _budget_payment_amount(budget, budget_item, amount)
     if amount <= 0:
         raise ValidationError("El presupuesto no tiene importe para cobrar.")
@@ -492,6 +541,7 @@ def create_event_budget_payment_preference(budget, budget_item=None, amount=None
         .filter(
             amount=amount,
             budget_item=budget_item,
+            payment_purpose=purpose,
             currency=Account.Currency.ARS,
             receipt_email=_clean_email(receipt_email),
             status__in=[EventBudgetPayment.Status.PENDING, EventBudgetPayment.Status.IN_PROCESS],
@@ -502,6 +552,7 @@ def create_event_budget_payment_preference(budget, budget_item=None, amount=None
     payment = reusable or EventBudgetPayment.objects.create(
         budget=budget,
         budget_item=budget_item,
+        payment_purpose=purpose,
         amount=amount,
         currency=Account.Currency.ARS,
         receipt_email=_clean_email(receipt_email),
@@ -568,7 +619,7 @@ def create_event_with_client_and_amount(event_data, client_data, amount=None, us
 
 
 @transaction.atomic
-def register_event_payment(event, account, amount, payment_date=None, payment_method="Manual", description="", is_deposit=False, budget_item=None, receipt_email="", user=None):
+def register_event_payment(event, account, amount, payment_date=None, payment_method="Manual", description="", is_deposit=False, budget_item=None, receipt_email="", user=None, payment_purpose=None):
     if not isinstance(event, Event):
         event = Event.objects.select_for_update().get(pk=event)
     if event.closed_at:
@@ -580,24 +631,35 @@ def register_event_payment(event, account, amount, payment_date=None, payment_me
     budget = get_or_create_event_budget(event)
     if budget_item and budget_item.budget_id != budget.id:
         raise ValidationError("El item no pertenece al evento.")
+    purpose = _payment_purpose_for(budget_item=budget_item, payment_purpose=payment_purpose, is_deposit=is_deposit)
+    if purpose == EventBudgetPayment.Purpose.DEPOSIT and budget_purpose_is_registered(budget, purpose):
+        raise ValidationError("La seña ya esta registrada.")
     payment_date = payment_date or timezone.localdate()
     ensure_account_day_is_open(account, payment_date)
     amount = Decimal(str(amount))
     if amount <= 0:
         raise ValidationError("El importe debe ser mayor a cero.")
+    if budget_item:
+        pending = budget_item.total - _approved_budget_item_paid_amount(budget_item)
+        if pending <= 0:
+            raise ValidationError("Este servicio ya esta pagado.")
+        if amount > pending:
+            raise ValidationError("El importe supera el saldo pendiente del servicio.")
     payment = EventBudgetPayment.objects.create(
         budget=budget,
         budget_item=budget_item,
+        payment_purpose=purpose,
         status=EventBudgetPayment.Status.APPROVED,
         amount=amount,
         currency=account.currency,
         payment_method=payment_method,
         receipt_email=_clean_email(receipt_email),
     )
+    code_value, code_name = _budget_payment_code_defaults(purpose)
     code, _ = MovementCode.objects.get_or_create(
-        code="SEÑA_EVENTO" if is_deposit else "COBRO_EVENTO",
+        code=code_value,
         defaults={
-            "name": "Seña de evento" if is_deposit else "Cobro de evento",
+            "name": code_name,
             "movement_type": MovementCode.MovementKind.INCOME,
             "category": "Eventos",
             "requires_event": True,
@@ -606,7 +668,7 @@ def register_event_payment(event, account, amount, payment_date=None, payment_me
     )
     movement = CashMovement.objects.create(
         date_payment=payment_date,
-        description=description or ("Seña de evento" if is_deposit else "Cobro de evento"),
+        description=description or _budget_payment_label(payment),
         movement_type=CashMovement.MovementType.INCOME,
         amount=amount,
         account=account,
@@ -621,7 +683,7 @@ def register_event_payment(event, account, amount, payment_date=None, payment_me
     payment.cash_movement = movement
     payment.save(update_fields=["cash_movement", "updated_at"])
     send_cash_movement_receipt_email(movement, payment.receipt_email)
-    if is_deposit and event.status == Event.Status.DRAFT:
+    if purpose == EventBudgetPayment.Purpose.DEPOSIT and event.status == Event.Status.DRAFT:
         event.status = Event.Status.SIGNALED
         event.save(update_fields=["status", "updated_at"])
     audit_log(user, "event_payment", movement, f"Evento #{event.id}")
@@ -636,10 +698,18 @@ def register_event_budget_item_manual_payment(budget_item, account, amount=None,
         account = Account.objects.get(pk=account)
     payment_date = payment_date or timezone.localdate()
     ensure_account_day_is_open(account, payment_date)
-    amount = Decimal(str(amount or budget_item.total))
+    pending = budget_item.total - _approved_budget_item_paid_amount(budget_item)
+    if pending <= 0:
+        raise ValidationError("Este servicio ya esta pagado.")
+    amount = Decimal(str(amount or pending))
+    if amount <= 0:
+        raise ValidationError("El importe debe ser mayor a cero.")
+    if amount > pending:
+        raise ValidationError("El importe supera el saldo pendiente del servicio.")
     payment = EventBudgetPayment.objects.create(
         budget=budget_item.budget,
         budget_item=budget_item,
+        payment_purpose=EventBudgetPayment.Purpose.BUDGET_ITEM,
         status=EventBudgetPayment.Status.APPROVED,
         amount=amount,
         currency=account.currency,
@@ -744,10 +814,11 @@ def ensure_event_budget_payment_cash_movement(payment, payment_data=None):
     )
     if account.currency != payment.currency:
         raise ValidationError("La cuenta de Mercado Pago no coincide con la moneda del pago.")
+    code_value, code_name = _budget_payment_code_defaults(payment.payment_purpose)
     code, _ = MovementCode.objects.get_or_create(
-        code="COBRO_EVENTO",
+        code=code_value,
         defaults={
-            "name": "Cobro de evento",
+            "name": code_name,
             "movement_type": MovementCode.MovementKind.INCOME,
             "category": "Eventos",
             "requires_event": True,
@@ -756,7 +827,7 @@ def ensure_event_budget_payment_cash_movement(payment, payment_data=None):
     )
     movement = CashMovement.objects.create(
         date_payment=_payment_accounting_date(payment_data),
-        description=f"Cobro Mercado Pago - {payment.budget_item.service_name if payment.budget_item_id else payment.budget.event.name}",
+        description=f"Mercado Pago - {_budget_payment_label(payment)}",
         voucher_number=payment.mp_payment_id,
         movement_type=CashMovement.MovementType.INCOME,
         amount=payment.amount,

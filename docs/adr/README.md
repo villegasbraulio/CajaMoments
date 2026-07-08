@@ -38,6 +38,7 @@ A decision based only on an unconfirmed `AGENT_ASSUMPTION` cannot be `accepted`.
 | [ADR-0012](0012-material-ui-backoffice-shell.md) | Material UI backoffice shell | accepted | USER_INSTRUCTION, REPOSITORY_EVIDENCE | 2026-07-07 | — |
 | [ADR-0013](0013-cash-movement-receipt-emails.md) | Cash movement receipt emails | accepted | USER_INSTRUCTION, REPOSITORY_EVIDENCE | 2026-07-08 | — |
 | [ADR-0014](0014-parametrized-event-types.md) | Parametrized event types | accepted | USER_INSTRUCTION, REPOSITORY_EVIDENCE | 2026-07-08 | — |
+| [ADR-0015](0015-event-budget-payment-purpose.md) | Event budget payment purpose | accepted | USER_INSTRUCTION, REPOSITORY_EVIDENCE | 2026-07-08 | — |
 
 ## Creating an ADR
 

@@ -86,6 +86,7 @@ from .services import (
     create_ticket_purchase_preference,
     build_cash_movement_receipt_pdf,
     build_mp_webhook_deduplication_key,
+    budget_purpose_is_registered,
     audit_log,
     get_dashboard_summary,
     get_or_create_event_budget,
@@ -466,6 +467,7 @@ class EventViewSet(AuditedModelViewSet):
                 is_deposit=bool(request.data.get("is_deposit")),
                 budget_item=request.data.get("budget_item") or None,
                 receipt_email=request.data.get("receipt_email", ""),
+                payment_purpose=request.data.get("payment_purpose") or None,
                 user=request_user_or_none(request),
             )
         except ValidationError as exc:
@@ -536,6 +538,7 @@ class EventBudgetPaymentPreferenceAPIView(APIView):
                 budget_item=budget_item,
                 amount=request.data.get("amount"),
                 receipt_email=request.data.get("receipt_email", ""),
+                payment_purpose=request.data.get("payment_purpose") or None,
             )
         except ValidationError as exc:
             return validation_error_response(exc)
@@ -562,20 +565,23 @@ class EventPaymentPublicAPIView(APIView):
             .values("budget_item")
             .annotate(total=Sum("amount"))
         }
+        can_pay_deposit = not budget_purpose_is_registered(budget, EventBudgetPayment.Purpose.DEPOSIT)
         items = []
         for item in budget.items.all():
             paid = paid_by_item.get(item.id, Decimal("0.00"))
-            items.append(
-                {
-                    "id": item.id,
-                    "service_name": item.service_name,
-                    "category": item.category,
-                    "is_optional": item.is_optional,
-                    "total": item.total,
-                    "paid": paid,
-                    "pending": max(item.total - paid, Decimal("0.00")),
-                }
-            )
+            pending = max(item.total - paid, Decimal("0.00"))
+            if pending > 0:
+                items.append(
+                    {
+                        "id": item.id,
+                        "service_name": item.service_name,
+                        "category": item.category,
+                        "is_optional": item.is_optional,
+                        "total": item.total,
+                        "paid": paid,
+                        "pending": pending,
+                    }
+                )
         return Response(
             {
                 "event": {
@@ -588,6 +594,7 @@ class EventPaymentPublicAPIView(APIView):
                 },
                 "financial": overview["financial"],
                 "budget_summary": overview["budget_summary"],
+                "can_pay_deposit": can_pay_deposit,
                 "items": items,
             }
         )
@@ -610,6 +617,7 @@ class EventPaymentPreferencePublicAPIView(APIView):
                 budget_item=budget_item,
                 amount=request.data.get("amount") if not budget_item else None,
                 receipt_email=receipt_email,
+                payment_purpose=request.data.get("payment_purpose") or None,
             )
         except ValidationError as exc:
             return validation_error_response(exc)

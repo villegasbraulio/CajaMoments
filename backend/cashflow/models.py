@@ -332,8 +332,14 @@ class EventBudgetPayment(TimestampedModel):
         REFUNDED = "refunded", "Reembolsado"
         IN_PROCESS = "in_process", "En proceso"
 
+    class Purpose(models.TextChoices):
+        DEPOSIT = "DEPOSIT", "Seña"
+        ADVANCE = "ADVANCE", "Adelanto"
+        BUDGET_ITEM = "BUDGET_ITEM", "Servicio"
+
     budget = models.ForeignKey(EventBudget, on_delete=models.PROTECT, related_name="payments")
     budget_item = models.ForeignKey(EventBudgetItem, null=True, blank=True, on_delete=models.PROTECT, related_name="payments")
+    payment_purpose = models.CharField(max_length=20, choices=Purpose.choices, default=Purpose.ADVANCE)
     idempotency_key = models.CharField(max_length=120, unique=True, default=uuid.uuid4)
     mp_preference_id = models.CharField(max_length=100, blank=True)
     preference_init_point = models.URLField(max_length=1000, blank=True)
