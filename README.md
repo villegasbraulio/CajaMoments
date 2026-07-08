@@ -1,244 +1,125 @@
 # Caja Moments
 
-Sistema operativo para salon de eventos: caja diaria, cuentas, movimientos,
+Sistema operativo para salones de eventos: caja diaria, cuentas, cierres,
 proveedores, personal eventual, impuestos, recordatorios, eventos, presupuestos,
-cobranzas online con Mercado Pago, venta publica de tarjetas de egresados y
-reportes.
+cobranzas por Mercado Pago, venta publica de tarjetas de egresados y reportes.
+
+## Estado auditado
+
+Auditoria local ejecutada el **2026-07-08** sobre `main` en el commit
+`15920cc`.
+
+| Area | Estado |
+|---|---|
+| Backend | Django/DRF funcional; 34 tests pasan. |
+| Frontend | React/Vite compila para produccion. |
+| Base de datos | Migraciones al dia; SQLite local y PostgreSQL por `DATABASE_URL`. |
+| Seguridad prod | `manage.py check --deploy` pasa con variables productivas. |
+| Seguridad deps | `npm audit --omit=dev` falla por Vite/esbuild dev-server advisories. |
+| Integraciones | Mercado Pago esta implementado, pero falta validacion end-to-end en sandbox/live. |
+
+### Que falta
+
+- CI basico: correr tests backend, migration check, build frontend y audit de
+  dependencias en cada pull request.
+- Pruebas frontend: hoy no hay unit tests, accesibilidad automatizada ni smoke
+  E2E autenticado.
+- Rate limiting o proteccion equivalente en endpoints publicos de pago.
+- Validacion real de Mercado Pago sandbox/live: checkout, webhook, refund y
+  chargeback.
+- Definicion legal/fiscal de recibos: los PDF actuales son comprobantes internos.
+- Backup/restore documentado y probado para produccion.
+- OpenAPI/Swagger o contrato API generado para integraciones externas.
+- Eliminacion del CDN de Bootstrap cuando las grillas restantes migren a MUI.
+
+### Donde falla o tiene deuda
+
+- `npm audit --omit=dev` reporta 2 vulnerabilidades en la cadena Vite/esbuild;
+  `npm audit fix --force` propone salto mayor a Vite 8, asi que no conviene
+  aplicarlo a ciegas.
+- La venv local usa Python 3.9 con LibreSSL; `urllib3` avisa que espera OpenSSL
+  1.1.1+. No rompe tests, pero conviene mover el entorno local a Python 3.11+
+  con OpenSSL moderno.
+- El cierre de evento congela totales, pero no bloquea todas las ediciones
+  relacionadas de presupuesto/proveedores/personal/caja.
+- La auditoria registra resumen de acciones, no diffs completos antes/despues.
+- `frontend/src/App.jsx`, `backend/cashflow/services.py`,
+  `backend/cashflow/views.py`, `backend/cashflow/models.py` y
+  `backend/cashflow/tests.py` concentran casi todo el sistema; funciona, pero
+  ya limita mantenimiento.
+- El deploy de desarrollo sin variables productivas muestra warnings esperables
+  de Django (`DEBUG`, `SECRET_KEY`, cookies seguras, HSTS). En produccion debe
+  usarse la configuracion segura documentada.
 
 ## Stack
 
-- Backend: Django 4.2, Django REST Framework, django-filter.
-- Frontend: React 18 + Vite.
-- Base local: SQLite.
-- Base produccion: PostgreSQL via `DATABASE_URL`.
-- Estilos: Bootstrap 5 + CSS propio.
-- Dinero: `DecimalField`, nunca `FloatField`.
-- Zona horaria: `America/Argentina/Mendoza`.
-- Autenticacion: token DRF.
+- **Backend:** Django 4.2, Django REST Framework, django-filter.
+- **Frontend:** React 18 + Vite, Material UI, CSS propio.
+- **Compatibilidad UI pendiente:** Bootstrap 5 por CDN para grillas heredadas.
+- **Base local:** SQLite.
+- **Base produccion:** PostgreSQL via `DATABASE_URL`.
+- **Autenticacion:** token DRF y sesion Django.
+- **Dinero:** `DecimalField`; no se usa `FloatField`.
+- **Zona horaria:** `America/Argentina/Mendoza`.
 
-## Casos de uso
+## Arquitectura
 
-### Acceso y permisos
+```text
+backend/
+  config/              Configuracion Django
+  cashflow/            Dominio, API, servicios, admin, migraciones y tests
+  build.sh             Build para Render
+  start.sh             Migraciones, seeds y Gunicorn en Render
+frontend/
+  src/App.jsx          SPA operativa
+  src/styles.css       Estilos propios
+docs/
+  adr/                 Decisiones tecnicas
+  worklog/             Bitacora de cambios
+  PROJECT_STATE.md     Estado actual del proyecto
+render.yaml            Blueprint Render: API, DB y frontend estatico
+```
 
-- Iniciar sesion desde el frontend con usuario Django.
-- Consultar datos con cualquier usuario autenticado.
-- Crear, editar, anular y ejecutar operaciones solo con usuarios `is_staff`.
-- Usar `/api/health/` sin autenticacion para healthchecks.
+## Modulos funcionales
 
-### Dashboard operativo
+- Acceso, permisos y healthcheck.
+- Dashboard operativo con saldos, flujo diario, pendientes y alertas.
+- Caja diaria con ingresos, egresos, ajustes, anulacion y PDF de comprobante.
+- Cuentas, billeteras, transferencias y cierres diarios por cuenta.
+- Proveedores, ledger, deudas, pagos y saldos a favor.
+- Personal eventual, roles, asignaciones, pagos y pendientes.
+- Clientes, eventos, Evento 360, presupuestos, items opcionales y cierre.
+- Cobranzas online de eventos por Mercado Pago.
+- Venta publica de tarjetas de egresados por Mercado Pago.
+- Impuestos, recordatorios, pagos recurrentes y reportes.
+- Auditoria central resumida.
 
-- Ver saldos actuales por cuenta y moneda.
-- Ver ingresos y egresos del dia.
-- Ver recordatorios pendientes.
-- Ver cierres pendientes o diferencias del dia.
-- Ver proveedores con saldo a favor, personal pendiente y movimientos anulados.
+## Reglas de negocio clave
 
-### Caja diaria
+- `CashMovement` es el libro canonico de dinero real.
+- Solo movimientos `CONFIRMED` impactan saldos.
+- Los movimientos no se borran; se anulan con estado `VOIDED`.
+- El cierre diario por cuenta bloquea nuevos movimientos en esa cuenta/fecha.
+- Las transferencias crean movimientos espejo `TRANSFER_OUT` y `TRANSFER_IN`.
+- Proveedores, empleados, impuestos, eventos y Mercado Pago terminan en caja.
+- Un pago aprobado de Mercado Pago crea una sola cobranza de caja.
+- Refunds y chargebacks crean una sola reversa cuando existe cobranza previa.
+- El total de un evento sale del presupuesto: item base `Evento` + opcionales.
+- Los links publicos exponen solo contexto de pago; la operatoria staff requiere
+  autenticacion y `is_staff`.
+- USD se maneja como cuenta separada; no hay conversion automatica a ARS.
 
-- Cargar ingresos, egresos y ajustes.
-- Asociar movimientos a cuenta, codigo, proveedor, empleado, evento o impuesto.
-- Filtrar movimientos por fecha, cuenta, tipo, codigo, proveedor, empleado,
-  evento, impuesto y estado.
-- Ver detalle completo, editar movimientos abiertos y descargar recibo o
-  comprobante PDF para movimientos confirmados.
-- Exportar el cierre por cuenta con todos los movimientos del dia: ingresos,
-  egresos, ajustes y transferencias.
-- Anular movimientos sin borrarlos fisicamente.
-- Bloquear cambios cuando la cuenta ya esta cerrada para ese dia.
+## Modelo de datos resumido
 
-### Cuentas y ajustes
-
-- Administrar cuentas/billeteras en ARS o USD.
-- Clasificar cuentas como efectivo, banco, billetera virtual, inversion, moneda
-  extranjera u otro.
-- Consultar saldo calculado.
-- Ajustar saldo declarado creando un movimiento `AJUSTE_CAJA` solo si hay
-  diferencia.
-
-### Transferencias
-
-- Transferir entre cuentas de la misma moneda.
-- Registrar comision de transferencia como egreso separado.
-- Crear automaticamente los movimientos `TRANSFER_OUT` y `TRANSFER_IN`.
-- Anular transferencias por estado, preservando trazabilidad.
-
-### Cierres diarios
-
-- Cerrar una cuenta para una fecha con saldo declarado.
-- Cerrar todas las cuentas activas del dia en un grupo de cierre.
-- Guardar saldo inicial, ingresos, egresos, transferencias, ajustes, saldo
-  calculado, saldo declarado y diferencia.
-- Consultar cierres historicos.
-
-### Proveedores
-
-- Crear proveedores con categoria, CUIT, telefono, email, direccion y notas.
-- Registrar deudas, pagos y ajustes en el ledger del proveedor.
-- Pagar proveedor desde caja y generar el movimiento asociado.
-- Asociar deudas o pagos a eventos.
-- Consultar saldo del proveedor; saldo negativo significa pago adelantado o
-  saldo a favor.
-
-### Personal eventual
-
-- Crear empleados y roles.
-- Guardar email y alias bancario del empleado.
-- Asignar empleados a eventos con rol, fecha, importe base, extra, total y
-  estado.
-- Registrar pagos parciales o totales al personal desde una cuenta.
-- Generar el movimiento de caja de cada pago.
-- Consultar pagado y pendiente por asignacion.
-
-### Clientes y eventos
-
-- Crear clientes con contacto y notas.
-- Crear eventos con cliente opcional, contacto alternativo, tipo, fecha, hora,
-  salon, invitados de cena/brindis, mesa principal, manteleria/vajilla,
-  protocolo, bebidas, adicionales, estado interno, notas operativas y estado.
-- Buscar y filtrar eventos por texto, estado, cliente, tipo, estado interno y
-  rango de fechas.
-- Ver resumen del evento con datos operativos, presupuesto, cobranzas,
-  movimientos, proveedores y personal asociado.
-- Mantener cronograma, croquis adjunto y funciones operativas del evento.
-
-### Presupuestos de eventos
-
-- Crear o consultar el presupuesto de un evento.
-- Cambiar estado del presupuesto: borrador, enviado, aprobado o cancelado.
-- Cargar items con servicio, categoria, cantidad, unidad, precio unitario,
-  total calculado, orden, opcionalidad y notas.
-- Separar subtotal obligatorio, total opcional y total general.
-- Editar o borrar items del presupuesto.
-- Cargar opcionales rapidos desde la ficha del evento.
-- Registrar cobros por item, manuales o por Mercado Pago, con su movimiento de
-  caja asociado.
-
-### Cobranzas online con Mercado Pago
-
-- Crear una preferencia de pago para un presupuesto con total mayor a cero.
-- Abrir checkout productivo o sandbox segun el link devuelto por Mercado Pago.
-- Registrar intentos de pago con idempotency key, preference id, payment id,
-  estado, metodo, tipo, cuotas, importe y moneda.
-- Recibir webhooks de Mercado Pago con deduplicacion y validacion de firma
-  cuando `MERCADOPAGO_WEBHOOK_SECRET` esta configurado.
-- Aprobar automaticamente el presupuesto cuando el pago aprobado coincide con
-  importe, moneda y referencia esperada.
-- Crear una sola cobranza en caja para pagos aprobados, en la cuenta
-  `MERCADOPAGO_ACCOUNT_NAME` o `MERCADO PAGO`.
-- Crear una sola reversa de egreso cuando Mercado Pago informa refund o
-  chargeback y ya existia una cobranza asociada.
-- Consultar intentos de pago y la cuenta/fecha del movimiento asociado.
-
-### Egresados y venta de tarjetas
-
-- Crear un link publico por evento de egresados, con precio por tarjeta y cupo
-  opcional.
-- Definir historial mensual de precios y maximo acumulado de tarjetas por
-  egresado.
-- Precargar egresados para que el comprador busque su nombre sin login.
-- Pedir cantidad y email, enviar resumen por email y abrir Checkout Pro.
-- Marcar compras pagadas por webhook Mercado Pago y crear el ingreso en caja.
-- Registrar pagos manuales de tarjetas por staff, generando caja.
-- Cerrar la lista final y exportarla en CSV.
-- Crear una reversa de caja ante refund o chargeback informado por Mercado Pago.
-
-### Pagos y auditoria
-
-- Registrar pagos desde un modulo con pestanas para proveedores, empleados,
-  servicios y egresados.
-- Crear tipos de servicio al vuelo y pagar servicios con descripcion libre.
-- Consultar auditoria central de acciones por usuario, accion, modelo, objeto y
-  fecha.
-
-### Impuestos y recordatorios
-
-- Crear tipos de impuesto.
-- Registrar pagos de impuestos desde caja.
-- Generar recordatorio proximo con recurrencia mensual, bimestral, trimestral,
-  anual o por cantidad custom de dias.
-- Crear recordatorios manuales relacionados con impuesto, evento o proveedor.
-- Marcar recordatorios como hechos.
-
-### Reportes
-
-- Resumen de caja diaria.
-- Cierre por cuenta/billetera.
-- Saldos por cuenta/billetera.
-- Ingresos vs egresos por periodo.
-- Egresos por codigo.
-- Gastos y saldos por proveedor.
-- Proveedores con saldo a favor.
-- Personal por evento.
-- Pagos al personal por periodo.
-- Impuestos pagados y proximos a vencer.
-- Movimientos anulados.
-- Transferencias entre cuentas.
-- Resultado basico por evento.
-- Exportacion CSV desde el frontend para tablas de reportes.
-
-## Modelo de datos
-
-### Entidades principales
-
-| Modelo | Proposito | Campos principales |
-|---|---|---|
-| `Account` | Cuenta, caja o billetera | `name`, `type`, `currency`, `active`, `initial_balance`, `notes` |
-| `MovementCode` | Codigo contable/operativo | `code`, `name`, `movement_type`, `category`, flags `requires_*`, `active` |
-| `CashMovement` | Libro mayor de caja | fechas, descripcion, comprobante, tipo, importe, cuenta, codigo, proveedor, empleado, evento, impuesto, transferencia, metodo, estado, auditoria y anulacion |
-| `AccountTransfer` | Transferencia entre cuentas | fecha, cuenta origen, cuenta destino, importe, comision, descripcion, estado |
-| `DailyCashCloseGroup` | Cierre diario general | fecha unica, estado, fecha de cierre, notas |
-| `DailyAccountClose` | Cierre de una cuenta en un dia | grupo, cuenta, saldo inicial, totales, saldo calculado, declarado, diferencia, cierre |
-| `Provider` | Proveedor | nombre, categoria, CUIT, telefono, email, direccion, activo, notas |
-| `ProviderLedgerEntry` | Cuenta corriente proveedor | proveedor, evento, fecha, tipo, descripcion, documento, importe, movimiento asociado, notas |
-| `EmployeeRole` | Rol eventual | nombre, activo |
-| `Employee` | Persona eventual | nombre, apellido, alias bancario, telefono, documento, email, activo, notas |
-| `EmployeePayment` | Pago a empleado | empleado, evento, asignacion, movimiento asociado, importe, fecha, notas |
-| `Client` | Cliente de evento | nombre, telefono, email, notas |
-| `Event` | Ficha operativa del evento | cliente, nombre, tipo, fecha, hora, salon, invitados, contacto, notas de servicio, cronograma, croquis, funciones, estado interno, estado |
-| `EventBudget` | Presupuesto del evento | evento, estado, notas comerciales, comentarios opcionales, notas internas |
-| `EventBudgetItem` | Item de presupuesto | presupuesto, servicio, categoria, cantidad, unidad, precio, total, orden, opcional, notas |
-| `EventBudgetPayment` | Intento/cobranza Mercado Pago o cobro manual por item | presupuesto, item opcional, idempotencia, preference/payment ids, estado MP, metodo, cuotas, importe, moneda, movimiento de caja |
-| `EventBudgetPaymentWebhookLog` | Registro de webhook MP | notification id, clave de deduplicacion, topic, payload, procesado, error, fecha |
-| `EventStaffAssignment` | Asignacion de personal a evento | evento, empleado, rol, fecha, base, extra, total, estado, notas |
-| `GraduationEvent` | Venta publica de tarjetas | evento base, precio inicial, cupo, maximo por egresado, token publico, cierre, activo, notas |
-| `GraduationTicketPrice` | Historial de precios | evento de egresados, precio, vigente desde, notas |
-| `Graduate` | Egresado precargado | evento de egresados, nombre, apellido, notas |
-| `TicketPurchase` | Compra de tarjetas | evento, egresado, cantidad, total, email, estado, IDs MP, medio, fecha, usuario staff, movimiento de caja |
-| `TicketPurchaseWebhookLog` | Registro de webhook de tarjetas | notification id, clave de deduplicacion, topic, payload, procesado, error, fecha |
-| `ServiceType` | Catalogo de servicios | nombre, activo, descripcion |
-| `AuditLogEntry` | Auditoria central | usuario, accion, modelo, id de objeto, detalle, fecha |
-| `TaxType` | Tipo de impuesto | nombre, activo, descripcion |
-| `TaxPayment` | Pago de impuesto | tipo, periodo, fecha, importe, cuenta, movimiento asociado, notas |
-| `Reminder` | Recordatorio | titulo, descripcion, vencimiento, aviso previo, recurrencia, estado, impuesto/evento/proveedor asociado |
-
-### Relaciones y reglas
-
-- `Event` puede tener un `Client`; si no, usa contacto alternativo.
-- `Event` tiene un solo `EventBudget`.
-- `EventBudget` tiene muchos `EventBudgetItem` y muchos `EventBudgetPayment`.
-- `EventBudgetPayment` puede tener un solo `CashMovement` de cobranza.
-- `EventBudgetPayment` puede apuntar a un `EventBudgetItem` cuando el cobro es
-  por item.
-- El costo del evento se calcula desde `EventBudget.total()`, no desde un campo
-  duplicado en `Event`.
-- `GraduationEvent` reusa un `Event` existente para que las ventas de tarjetas
-  impacten en la misma caja y reportes del evento.
-- El precio vigente de tarjetas sale de `GraduationTicketPrice`: se usa el
-  ultimo `vigente_desde` menor o igual a la fecha.
-- El cierre final de egresados bloquea nuevos egresados y compras/asignaciones.
-- `AuditLogEntry` registra acciones operativas; no guarda diffs completos.
-- `CashMovement` es el registro canonico de dinero real; proveedores, empleados,
-  impuestos, transferencias y cobranzas online apuntan a movimientos de caja.
-- `CashMovement` no se borra: se anula con estado `VOIDED` y motivo.
-- Solo movimientos `CONFIRMED` afectan saldos.
-- `DailyAccountClose` bloquea nuevos cambios para esa cuenta y fecha.
-- `AccountTransfer` no permite origen y destino iguales ni monedas distintas.
-- `EventStaffAssignment.total_amount` se calcula como base + extra.
-- `EventStaffAssignment` calcula pagado y pendiente desde `EmployeePayment`.
-- `EventBudgetItem.total` se calcula como cantidad * precio unitario.
-- `Provider.balance()` suma deudas y ajustes, y resta pagos.
-- `Account.current_balance()` parte del saldo inicial y suma/resta movimientos
-  confirmados.
+| Area | Modelos principales |
+|---|---|
+| Caja | `Account`, `MovementCode`, `CashMovement`, `AccountTransfer`, `DailyCashCloseGroup`, `DailyAccountClose` |
+| Proveedores | `Provider`, `ProviderLedgerEntry` |
+| Personal | `Employee`, `EmployeeRole`, `EventStaffAssignment`, `EmployeePayment` |
+| Eventos | `Client`, `Event`, `EventBudget`, `EventBudgetItem`, `EventBudgetPayment` |
+| Mercado Pago | `EventBudgetPaymentWebhookLog`, `TicketPurchaseWebhookLog` |
+| Egresados | `GraduationEvent`, `GraduationTicketPrice`, `Graduate`, `TicketPurchase` |
+| Operacion | `ServiceType`, `TaxType`, `TaxPayment`, `Reminder`, `AuditLogEntry` |
 
 ## API
 
@@ -257,40 +138,24 @@ Endpoints principales:
 /api/health/
 /api/dashboard/
 /api/accounts/
-/api/accounts/{id}/balance/
-/api/accounts/{id}/adjust-balance/
-/api/movement-codes/
 /api/cash-movements/
-/api/cash-movements/{id}/void/
-/api/cash-movements/{id}/receipt/
 /api/account-transfers/
 /api/daily-cash-closes/
-/api/daily-cash-closes/close-account/
 /api/daily-account-closes/
-/api/daily-account-closes/{id}/export/
 /api/providers/
-/api/providers/{id}/ledger/
-/api/providers/{id}/pay/
 /api/provider-ledger/
 /api/employees/
 /api/employee-roles/
 /api/clients/
 /api/events/
-/api/events/{id}/overview/
-/api/events/{id}/budget/
 /api/event-budgets/
 /api/event-budget-items/
-/api/event-budget-items/{id}/pay-manual/
 /api/event-budget-payments/
 /api/event-budget-payments/create-preference/
 /api/event-budget-payments/webhook/
-/api/event-staff-assignments/
-/api/employee-payments/
+/api/event-payments/{token}/public/
+/api/event-payments/{token}/create-preference/
 /api/graduation-events/
-/api/graduation-events/{id}/graduates/
-/api/graduation-events/{id}/ticket-price/
-/api/graduation-events/{id}/close/
-/api/graduation-events/{id}/export/
 /api/graduation-events/{token}/public/
 /api/graduation-events/{token}/graduates/search/
 /api/graduation-ticket-prices/
@@ -304,7 +169,6 @@ Endpoints principales:
 /api/tax-types/
 /api/tax-payments/
 /api/reminders/
-/api/reminders/{id}/complete/
 /api/reports/
 /api/audit-log/
 ```
@@ -328,23 +192,6 @@ Reportes:
 /api/reports/event-summary/
 ```
 
-## Estructura
-
-```text
-backend/
-  config/              Configuracion Django
-  cashflow/            Dominio de caja, eventos, pagos, API, admin y tests
-  build.sh             Build para Render
-  start.sh             Arranque Render: migraciones, seeds y admin opcional
-render.yaml            Blueprint Render: API, DB y static site React
-frontend/
-  src/                 SPA React
-docs/
-  adr/                 Decisiones tecnicas
-  worklog/             Bitacora de trabajo
-  PROJECT_STATE.md     Estado actual resumido
-```
-
 ## Backend local
 
 Crear entorno e instalar dependencias:
@@ -362,7 +209,7 @@ cd backend
 ../.venv/bin/python manage.py seed_initial_data --skip-examples
 ```
 
-Crear usuario:
+Crear usuario admin:
 
 ```bash
 ../.venv/bin/python manage.py createsuperuser
@@ -384,13 +231,6 @@ Admin:
 
 ```text
 http://localhost:8000/admin/
-```
-
-Tests:
-
-```bash
-cd backend
-../.venv/bin/python manage.py test
 ```
 
 ## Frontend local
@@ -415,18 +255,37 @@ Si la API corre en otra URL:
 VITE_API_BASE_URL=http://localhost:8000/api npm run dev
 ```
 
-Build:
+## Comandos de verificacion
+
+Backend:
 
 ```bash
+cd backend
+../.venv/bin/python manage.py test
+../.venv/bin/python manage.py makemigrations --check --dry-run
+```
+
+Frontend:
+
+```bash
+cd frontend
 npm run build
+npm audit --omit=dev
+```
+
+Deploy settings check:
+
+```bash
+cd backend
+env DEBUG=False SECRET_KEY=prod-like-secret-key-with-enough-length-for-django-checks ALLOWED_HOSTS=caja-moments-api.onrender.com CORS_ALLOWED_ORIGINS=https://caja-moments-web.onrender.com CSRF_TRUSTED_ORIGINS=https://caja-moments-web.onrender.com SECURE_SSL_REDIRECT=True ../.venv/bin/python manage.py check --deploy
 ```
 
 ## Variables de entorno
 
 Ejemplos:
 
-- [backend/.env.example](/Users/braulio/CajaMoments/backend/.env.example)
-- [frontend/.env.example](/Users/braulio/CajaMoments/frontend/.env.example)
+- `backend/.env.example`
+- `frontend/.env.example`
 
 Backend:
 
@@ -444,6 +303,7 @@ Backend:
 - `ADMIN_EMAIL`
 - `MERCADOPAGO_ACCESS_TOKEN`
 - `MERCADOPAGO_WEBHOOK_SECRET`
+- `MERCADOPAGO_WEBHOOK_SIGNATURE_REQUIRED`
 - `MERCADOPAGO_COLLECTOR_ID`
 - `MERCADOPAGO_ACCOUNT_NAME`
 - `EMAIL_BACKEND`
@@ -460,7 +320,7 @@ Frontend:
 
 ## Seeds
 
-`seed_initial_data --skip-examples` carga maestros:
+`seed_initial_data --skip-examples` carga:
 
 - Cuentas: EFECTIVO, BNA, MERCADO PAGO, NARANJA, PLAZO FIJO, FRASCOS, USD.
 - Codigos: COBRO_EVENTO, SEÑA_EVENTO, PAGO_PROVEEDOR, PERSONAL_EVENTUAL,
@@ -471,42 +331,13 @@ Frontend:
   Municipal.
 - Roles: Mozo, Cocina, Cabina, Limpieza anterior, Limpieza posterior, Armado,
   Produccion, Barra, Otro.
+- Servicios: servicios operativos iniciales.
 
-Sin `--skip-examples`, tambien carga proveedores, empleados, cliente y evento de
-ejemplo.
-
-## Decisiones tecnicas
-
-- El nucleo es `CashMovement`; todo movimiento real de dinero pasa por caja.
-- Los saldos no se editan historicamente: se calculan desde saldo inicial +
-  movimientos confirmados.
-- Los movimientos anulados no impactan saldos y no se borran.
-- Las correcciones de saldo se registran con `AJUSTE_CAJA`.
-- Los cierres son por fecha + cuenta y bloquean cambios posteriores.
-- Las transferencias crean movimientos espejo, mas un egreso por comision si
-  corresponde.
-- Los pagos a proveedores, empleados e impuestos generan movimientos de caja.
-- Las cobranzas Mercado Pago aprobadas generan una unica cobranza de caja.
-- Los refunds/chargebacks generan una unica reversa si habia cobranza previa.
-- Los recibos/comprobantes PDF son documentos simples generados sin dependencia
-  externa.
-- Las tarjetas de egresados usan link publico, lista cerrada de egresados y el
-  mismo patron de Mercado Pago + caja que los presupuestos.
-- Los precios de tarjetas se cargan por mes; no hay cron de actualizacion.
-- La auditoria usa un log central resumido en vez de columnas repetidas en todos
-  los modelos.
-- USD es una cuenta separada y no se convierte a ARS.
-- La logica de negocio vive en `cashflow/services.py`.
-- La API requiere autenticacion por token salvo login, logout y healthcheck.
-- Las mutaciones operativas requieren `is_staff`.
+Sin `--skip-examples`, tambien carga datos de ejemplo.
 
 ## Deploy en Render
 
-El repo incluye:
-
-- [render.yaml](/Users/braulio/CajaMoments/render.yaml)
-- [backend/build.sh](/Users/braulio/CajaMoments/backend/build.sh)
-- [backend/start.sh](/Users/braulio/CajaMoments/backend/start.sh)
+El repo incluye `render.yaml`, `backend/build.sh` y `backend/start.sh`.
 
 Blueprint:
 
@@ -518,15 +349,17 @@ En cada arranque del backend, `start.sh`:
 
 - corre migraciones;
 - carga seeds maestros;
-- crea o actualiza admin solo si existe `ADMIN_PASSWORD`.
+- crea o actualiza admin solo si existe `ADMIN_PASSWORD`;
+- inicia Gunicorn.
 
 Para operar datos reales:
 
 - usar plan con backups;
-- definir `ADMIN_PASSWORD` seguro;
+- definir `SECRET_KEY` y `ADMIN_PASSWORD` seguros;
 - configurar dominio/HTTPS;
-- configurar variables Mercado Pago;
-- validar checkout, webhook y refund en sandbox antes de usar live.
+- configurar variables de Mercado Pago;
+- validar checkout, webhook, refund y chargeback en sandbox antes de usar live;
+- configurar SMTP real si se necesitan emails fuera de consola.
 
 ## Deploy en Vercel
 
@@ -538,8 +371,8 @@ Vercel esta preparado como opcion separada:
 
 Archivos incluidos:
 
-- [backend/vercel.json](/Users/braulio/CajaMoments/backend/vercel.json)
-- [backend/api/index.py](/Users/braulio/CajaMoments/backend/api/index.py)
-- [frontend/vercel.json](/Users/braulio/CajaMoments/frontend/vercel.json)
+- `backend/vercel.json`
+- `backend/api/index.py`
+- `frontend/vercel.json`
 
 Render sigue siendo la opcion mas simple para operar API, DB y frontend juntos.

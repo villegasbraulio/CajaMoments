@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   Alert,
   AppBar,
+  Autocomplete,
   Box,
   Button,
   Card,
@@ -2204,6 +2205,15 @@ function EventsScreen({ refs, mutate, reloadKey }) {
   const checkoutUrl = latestPayment?.init_point || latestPayment?.preference_init_point || latestPayment?.sandbox_init_point || latestPayment?.preference_sandbox_init_point || null;
   const selectedBudgetPayments = refs.eventBudgetPayments.filter((payment) => String(payment.event_id) === String(selectedEventId));
   const publicPaymentLink = selectedEvent ? `${window.location.origin}/pagar-evento/${selectedEvent.public_payment_token}/` : "";
+  function openBudgetItemDialog(isOptional = false) {
+    setBudgetItem({
+      ...emptyBudgetItemForm(),
+      category: isOptional ? "Opcional" : "",
+      unit_label: isOptional ? "servicio" : "",
+      is_optional: isOptional,
+    });
+    setEventDialogs({ ...eventDialogs, item: true });
+  }
   function paidForBudgetItem(itemId) {
     return selectedBudgetPayments
       .filter((payment) => String(payment.budget_item) === String(itemId) && payment.status === "approved")
@@ -2211,6 +2221,19 @@ function EventsScreen({ refs, mutate, reloadKey }) {
   }
   function pendingForBudgetItem(item) {
     return Math.max(Number(item?.total || 0) - paidForBudgetItem(item?.id), 0);
+  }
+  function openItemPaymentDialog(item) {
+    setEventPayment((current) => ({
+      ...current,
+      account: "",
+      amount: String(pendingForBudgetItem(item) || item.total || ""),
+      payment_method: current.payment_method || "Efectivo",
+      description: `Cobro ${item.is_optional ? "opcional" : "item"} - ${item.service_name}`,
+      is_deposit: false,
+      budget_item: String(item.id),
+      receipt_email: current.receipt_email || overview?.event?.client_email || selectedEvent?.contact_email || "",
+    }));
+    setEventDialogs({ ...eventDialogs, payment: true });
   }
 
   return (
@@ -2417,16 +2440,18 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                   </button>
                 </div>
                 <div className="row g-3">
-                  <div className="d-none">
-                    <TextInput label="Link de pago para cliente" value={publicPaymentLink} onChange={() => {}} />
-                    <button type="button" className="btn btn-sm btn-outline-dark" onClick={() => navigator.clipboard?.writeText(publicPaymentLink)}>Copiar link</button>
-                  </div>
-                  <div className="col-lg-12">
+                  <div className="col-lg-6">
                     <ActionCard title="Registrar ingreso" subtitle="Seña, entrega o cobro asociado a un item.">
                       <Button onClick={() => {
                         setEventPayment((current) => ({ ...current, receipt_email: current.receipt_email || overview?.event?.client_email || selectedEvent.contact_email || "" }));
                         setEventDialogs({ ...eventDialogs, payment: true });
                       }}>Registrar cobro</Button>
+                    </ActionCard>
+                  </div>
+                  <div className="col-lg-6">
+                    <ActionCard title="Link de pago" subtitle="El cliente puede pagar base u opcionales por Mercado Pago.">
+                      <Button variant="outlined" onClick={() => navigator.clipboard?.writeText(publicPaymentLink)}>Copiar link</Button>
+                      <Button onClick={() => window.open(publicPaymentLink, "_blank", "noreferrer")}>Abrir link</Button>
                     </ActionCard>
                   </div>
                 </div>
@@ -2458,7 +2483,7 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                               setEventPayment({ ...eventPayment, budget_item: v, amount: item ? String(pendingForBudgetItem(item) || item.total || "") : eventPayment.amount });
                             }}
                             options={budget?.items || []}
-                            labelFor={(item) => `${item.service_name} · pendiente ${money(pendingForBudgetItem(item))}`}
+                            labelFor={(item) => `${item.is_optional ? "Opcional" : "Base"} · ${item.service_name} · pendiente ${money(pendingForBudgetItem(item))}`}
                             empty="Pago general / seña"
                           />
                         </div>
@@ -2607,7 +2632,8 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                   </div>
                   <Stack direction="row" spacing={1}>
                     <Button variant="outlined" disabled={!budget?.id} onClick={() => setEventDialogs({ ...eventDialogs, budget: true })}>Editar cabecera</Button>
-                    <Button disabled={!budget?.id} onClick={() => setEventDialogs({ ...eventDialogs, item: true })}>Agregar item</Button>
+                    <Button variant="outlined" disabled={!budget?.id} onClick={() => openBudgetItemDialog(false)}>Agregar base</Button>
+                    <Button disabled={!budget?.id} onClick={() => openBudgetItemDialog(true)}>Agregar opcional</Button>
                     <Chip label={loadingBudget ? "Cargando..." : `${budget?.item_count || 0} item(s)`} variant="outlined" />
                   </Stack>
                 </div>
@@ -2725,7 +2751,7 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                     </form>
                     </ActionDialog>
 
-                    <ActionDialog open={eventDialogs.item} title="Agregar item al presupuesto" onClose={() => setEventDialogs({ ...eventDialogs, item: false })}>
+                    <ActionDialog open={eventDialogs.item} title={budgetItem.is_optional ? "Agregar opcional / servicio extra" : "Agregar item base"} onClose={() => setEventDialogs({ ...eventDialogs, item: false })}>
                     <form
                       onSubmit={(e) => {
                         e.preventDefault();
@@ -2745,12 +2771,12 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                             setBudgetItem(emptyBudgetItemForm());
                             setEventDialogs((state) => ({ ...state, item: false }));
                           },
-                          "Item de presupuesto agregado",
+                          budgetItem.is_optional ? "Opcional agregado" : "Item de presupuesto agregado",
                         );
                       }}
                     >
-                      <h4 className="section-title">Nuevo item</h4>
-                      <TextInput label="Servicio" value={budgetItem.service_name} onChange={(v) => setBudgetItem({ ...budgetItem, service_name: v })} required />
+                      <h4 className="section-title">{budgetItem.is_optional ? "Nuevo opcional" : "Nuevo item"}</h4>
+                      <TextInput label={budgetItem.is_optional ? "Servicio extra" : "Servicio"} value={budgetItem.service_name} onChange={(v) => setBudgetItem({ ...budgetItem, service_name: v })} required />
                       <div className="row g-2">
                         <div className="col-md-6"><TextInput label="Categoria" value={budgetItem.category} onChange={(v) => setBudgetItem({ ...budgetItem, category: v })} /></div>
                         <div className="col-md-6"><TextInput label="Unidad" value={budgetItem.unit_label} onChange={(v) => setBudgetItem({ ...budgetItem, unit_label: v })} placeholder="personas, fijo, horas..." /></div>
@@ -2760,7 +2786,7 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                       </div>
                       <div className="form-check mt-2">
                         <input className="form-check-input" id="budget-item-optional" type="checkbox" checked={budgetItem.is_optional} onChange={(e) => setBudgetItem({ ...budgetItem, is_optional: e.target.checked })} />
-                        <label className="form-check-label" htmlFor="budget-item-optional">Es opcional</label>
+                        <label className="form-check-label" htmlFor="budget-item-optional">Es opcional / extra</label>
                       </div>
                       <TextAreaInput label="Notas" value={budgetItem.notes} onChange={(v) => setBudgetItem({ ...budgetItem, notes: v })} rows={2} />
                       <button className="btn btn-earth w-100 mt-2" disabled={!budget?.id}>Agregar item</button>
@@ -2802,7 +2828,10 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                                       }, "Checkout del item preparado");
                                     }}
                                   >
-                                    MP
+                                    Link MP
+                                  </Button>
+                                  <Button size="small" variant="outlined" onClick={() => openItemPaymentDialog(row)}>
+                                    Cobro manual
                                   </Button>
                                   <Button
                                     size="small"
@@ -2969,19 +2998,12 @@ function EventsScreen({ refs, mutate, reloadKey }) {
                                     }, "Checkout del item preparado");
                                   }}
                                 >
-                                  MP item
+                                  Link MP
                                 </button>
                                 <button
                                   className="btn btn-sm btn-outline-dark"
                                   type="button"
-                                  onClick={() => {
-                                    const account = window.prompt("ID de cuenta para registrar el cobro manual:");
-                                    if (!account) return;
-                                    mutate(
-                                      () => api(`/event-budget-items/${item.id}/pay-manual/`, { method: "POST", body: JSON.stringify({ account }) }),
-                                      "Cobro del item registrado",
-                                    );
-                                  }}
+                                  onClick={() => openItemPaymentDialog(item)}
                                 >
                                   Cobro manual
                                 </button>
@@ -3237,6 +3259,23 @@ function PublicGraduationPage({ token }) {
   const [graduates, setGraduates] = useState([]);
   const [form, setForm] = useState({ graduate: "", quantity: "1", email: "" });
   const [status, setStatus] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const ticketPrice = numberValue(eventData?.current_price || eventData?.price_per_ticket);
+  const maxTickets = eventData?.max_tickets_per_graduate ? Number(eventData.max_tickets_per_graduate) : null;
+  const ticketQuantity = Math.max(0, Math.floor(numberValue(form.quantity)));
+  const ticketTotal = ticketPrice * ticketQuantity;
+  const selectedGraduate = graduates.find((graduate) => String(graduate.id) === String(form.graduate));
+  const canSubmit = Boolean(form.graduate && form.email && ticketTotal > 0);
+  const steps = [
+    { label: "Egresado", done: Boolean(form.graduate) },
+    { label: "Cantidad", done: ticketQuantity > 0 },
+    { label: "Email", done: Boolean(form.email) },
+  ];
+
+  function setQuantity(value) {
+    const next = Math.max(1, Math.floor(numberValue(value) || 1));
+    setForm({ ...form, quantity: String(maxTickets ? Math.min(next, maxTickets) : next) });
+  }
 
   useEffect(() => {
     api(`/graduation-events/${token}/public/`, { token: "" }).then(setEventData).catch((error) => setStatus({ type: "error", message: prettifyErrorMessage(error.message) }));
@@ -3250,6 +3289,8 @@ function PublicGraduationPage({ token }) {
 
   async function submit(event) {
     event.preventDefault();
+    if (!canSubmit || submitting) return;
+    setSubmitting(true);
     try {
       const purchase = await api("/ticket-purchases/create-preference/", {
         method: "POST",
@@ -3258,27 +3299,122 @@ function PublicGraduationPage({ token }) {
       });
       setStatus({ type: "success", message: "Resumen enviado. Abriendo Mercado Pago..." });
       const url = purchase.init_point || purchase.sandbox_init_point;
-      if (url) window.location.href = url;
+      if (url) {
+        window.location.href = url;
+      } else {
+        setStatus({ type: "error", message: "No pudimos abrir Mercado Pago. Intenta de nuevo." });
+        setSubmitting(false);
+      }
     } catch (error) {
       setStatus({ type: "error", message: prettifyErrorMessage(error.message) });
+      setSubmitting(false);
     }
   }
 
   return (
-    <div className="app-shell public-shell">
+    <div className="app-shell public-shell purchase-shell">
       <main className="main-stage">
-        <section className="hero-card">
-          <div className="pill mb-3">Caja Moments</div>
-          <h2 className="mb-2">{eventData?.event_name || "Egresados"}</h2>
-          <p className="text-muted">{eventData ? `Tarjeta: ${money(eventData.price_per_ticket)}` : "Cargando evento..."}</p>
-          <AlertLine status={status} />
-          <form className="work-card" onSubmit={submit}>
-            <SelectInput label="Egresado" value={form.graduate} onChange={(v) => setForm({ ...form, graduate: v })} options={graduates} labelFor={(g) => g.display_name} required />
-            <TextInput label="Cantidad de tarjetas" type="number" value={form.quantity} onChange={(v) => setForm({ ...form, quantity: v })} required />
-            <TextInput label="Email" type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} required />
-            <button className="btn btn-earth w-100 mt-2">Continuar a Mercado Pago</button>
-          </form>
+        <section className="purchase-hero">
+          <div>
+            <div className="pill mb-3">Caja Moments</div>
+            <h1>{eventData?.event_name || "Compra de tarjetas"}</h1>
+            <p>{eventData ? `Tarjeta ${money(ticketPrice)}${eventData.event_date ? ` · ${formatDate(eventData.event_date)}` : ""}` : "Cargando evento..."}</p>
+          </div>
+          <div className="purchase-total-chip">
+            <span>Total</span>
+            <strong>{money(ticketTotal)}</strong>
+          </div>
         </section>
+
+        <div className="purchase-steps" aria-label="Progreso de compra">
+          {steps.map((step, index) => (
+            <div className={`purchase-step ${step.done ? "done" : ""}`} key={step.label}>
+              <span>{step.done ? "OK" : index + 1}</span>
+              <strong>{step.label}</strong>
+            </div>
+          ))}
+        </div>
+
+        <div className="purchase-grid">
+          <form className="purchase-panel" onSubmit={submit}>
+            <AlertLine status={status} />
+            <div className="purchase-section">
+              <span className="purchase-kicker">1. Nombre del egresado</span>
+              <Autocomplete
+                options={graduates}
+                value={selectedGraduate || null}
+                onChange={(_event, graduate) => setForm({ ...form, graduate: graduate?.id ? String(graduate.id) : "" })}
+                getOptionLabel={(graduate) => graduate?.display_name || ""}
+                isOptionEqualToValue={(option, value) => String(option.id) === String(value.id)}
+                noOptionsText="No encontramos ese nombre"
+                renderInput={(params) => <TextField {...params} label="Buscar egresado" required />}
+              />
+              <div className={`selected-graduate ${selectedGraduate ? "selected" : ""}`}>
+                <span>{selectedGraduate ? "Seleccionado" : "Esperando seleccion"}</span>
+                <strong>{selectedGraduate?.display_name || "Elegí el nombre de la lista"}</strong>
+              </div>
+            </div>
+
+            <div className="purchase-section">
+              <span className="purchase-kicker">2. Cantidad de tarjetas</span>
+              <div className="quantity-picker">
+                <button type="button" onClick={() => setQuantity(ticketQuantity - 1)} disabled={ticketQuantity <= 1}>-</button>
+                <input
+                  aria-label="Cantidad de tarjetas"
+                  className="form-control"
+                  min="1"
+                  max={maxTickets || undefined}
+                  step="1"
+                  type="number"
+                  value={form.quantity}
+                  onChange={(event) => setQuantity(event.target.value)}
+                />
+                <button type="button" onClick={() => setQuantity(ticketQuantity + 1)} disabled={Boolean(maxTickets && ticketQuantity >= maxTickets)}>+</button>
+              </div>
+              <p className="purchase-note">
+                {maxTickets ? `Máximo configurado por egresado: ${maxTickets} tarjetas.` : "La cantidad se confirma antes de abrir Mercado Pago."}
+              </p>
+            </div>
+
+            <div className="purchase-section">
+              <span className="purchase-kicker">3. Comprobante</span>
+              <TextInput label="Email" type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} required />
+            </div>
+
+            <button className="btn btn-earth w-100 purchase-pay-button" disabled={!canSubmit || submitting}>
+              {submitting ? "Abriendo Mercado Pago..." : `Pagar ${money(ticketTotal)} con Mercado Pago`}
+            </button>
+          </form>
+
+          <aside className="purchase-summary" aria-label="Resumen de compra">
+            <div>
+              <span className="purchase-kicker">Resumen</span>
+              <h2>{eventData?.event_name || "Evento"}</h2>
+            </div>
+            <div className="summary-lines">
+              <div>
+                <span>Tarjeta</span>
+                <strong>{money(ticketPrice)}</strong>
+              </div>
+              <div>
+                <span>Cantidad</span>
+                <strong>{ticketQuantity || "-"}</strong>
+              </div>
+              <div>
+                <span>Subtotal</span>
+                <strong>{money(ticketTotal)}</strong>
+              </div>
+              <div className="summary-total">
+                <span>Total</span>
+                <strong>{money(ticketTotal)}</strong>
+              </div>
+            </div>
+            <div className="summary-footnote">
+              <strong>Pago seguro por Mercado Pago</strong>
+              <span>Después de continuar, vas a elegir medio de pago y cuotas disponibles.</span>
+            </div>
+          </aside>
+        </div>
       </main>
     </div>
   );

@@ -328,7 +328,7 @@ class MercadoPagoClient:
             payload["auto_return"] = "approved"
         request_options = RequestOptions(
             access_token=self.access_token,
-            custom_headers={"x-idempotency-key": payment.idempotency_key},
+            custom_headers={"x-idempotency-key": str(payment.idempotency_key)},
         )
         response = self.sdk.preference().create(payload, request_options)
         return self._unwrap_response(response, "No pudimos crear la preferencia de pago.")
@@ -364,7 +364,7 @@ class MercadoPagoClient:
             payload["auto_return"] = "approved"
         request_options = RequestOptions(
             access_token=self.access_token,
-            custom_headers={"x-idempotency-key": purchase.idempotency_key},
+            custom_headers={"x-idempotency-key": str(purchase.idempotency_key)},
         )
         response = self.sdk.preference().create(payload, request_options)
         return self._unwrap_response(response, "No pudimos crear la preferencia de tarjetas.")

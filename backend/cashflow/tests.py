@@ -1,6 +1,6 @@
 from datetime import date
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -54,6 +54,7 @@ from .services import (
     register_service_payment,
     register_ticket_purchase_manual,
     register_tax_payment,
+    MercadoPagoClient,
     sync_event_budget_payment,
     sync_ticket_purchase_payment,
     void_cash_movement,
@@ -662,6 +663,35 @@ class GraduationTicketTests(TestCase):
         self.graduation_event = GraduationEvent.objects.create(event=self.event, price_per_ticket=Decimal("1500.00"), capacity=100, max_tickets_per_graduate=3)
         GraduationTicketPrice.objects.create(graduation_event=self.graduation_event, price=Decimal("1500.00"), valid_from=date(2026, 6, 1))
         self.graduate = Graduate.objects.create(graduation_event=self.graduation_event, first_name="Ana", last_name="Lopez")
+
+    @override_settings(MERCADOPAGO_ACCESS_TOKEN="test-token")
+    @patch("cashflow.services.RequestOptions")
+    @patch("cashflow.services.mercadopago")
+    def test_ticket_preference_idempotency_header_is_string(self, mercado_pago, request_options):
+        preference_api = Mock()
+        preference_api.create.return_value = {
+            "status": 201,
+            "response": {
+                "id": "pref_ticket",
+                "init_point": "https://www.mercadopago.com.ar/checkout/v1/redirect?pref_id=pref_ticket",
+                "sandbox_init_point": "https://sandbox.mercadopago.com.ar/checkout/v1/redirect?pref_id=pref_ticket",
+            },
+        }
+        sdk = Mock()
+        sdk.preference.return_value = preference_api
+        mercado_pago.SDK.return_value = sdk
+        purchase = TicketPurchase.objects.create(
+            graduation_event=self.graduation_event,
+            graduate=self.graduate,
+            quantity=1,
+            email="ana@example.com",
+        )
+
+        MercadoPagoClient().create_ticket_preference(purchase)
+
+        header_value = request_options.call_args.kwargs["custom_headers"]["x-idempotency-key"]
+        self.assertIsInstance(header_value, str)
+        self.assertEqual(header_value, str(purchase.idempotency_key))
 
     @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
     @patch("cashflow.services.MercadoPagoClient")
