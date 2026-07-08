@@ -312,7 +312,7 @@ function ActionCard({ title, subtitle, children }) {
             <Typography variant="h6">{title}</Typography>
             {subtitle ? <Typography variant="body2" color="text.secondary">{subtitle}</Typography> : null}
           </Box>
-          <Stack className="action-card-actions" direction="row" spacing={1} flexWrap="wrap">{children}</Stack>
+          <Stack className="action-card-actions" direction="row" spacing={1} sx={{ flexWrap: "wrap" }}>{children}</Stack>
         </Stack>
       </CardContent>
     </Card>
@@ -822,7 +822,7 @@ function AppContent() {
         }}
       >
         <Box sx={{ p: 2.5 }}>
-          <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ mb: 2 }}>
+          <Stack direction="row" spacing={1} sx={{ mb: 2, alignItems: "center", justifyContent: "space-between" }}>
             <Chip label="Backoffice" size="small" sx={{ bgcolor: "rgba(255,255,255,0.12)", color: "white" }} />
             <IconButton
               onClick={() => setDrawerOpen(false)}
@@ -849,7 +849,7 @@ function AppContent() {
                 "&:hover": { bgcolor: "rgba(255,255,255,0.1)" },
               }}
             >
-              <ListItemText primary={label} primaryTypographyProps={{ fontWeight: active === key ? 750 : 600 }} />
+              <ListItemText primary={label} sx={{ "& .MuiListItemText-primary": { fontWeight: active === key ? 750 : 600 } }} />
             </ListItemButton>
           ))}
         </List>
@@ -857,7 +857,7 @@ function AppContent() {
       <Box component="main" sx={{ flexGrow: 1, minWidth: 0 }}>
         <AppBar position="sticky" color="inherit" elevation={0} sx={{ borderBottom: "1px solid rgba(23,33,27,0.08)", backdropFilter: "blur(14px)" }}>
           <Toolbar sx={{ justifyContent: "space-between", gap: 1, flexWrap: { xs: "wrap", sm: "nowrap" }, py: { xs: 1, sm: 0 } }}>
-            <Stack direction="row" alignItems="center" spacing={1} sx={{ minWidth: 0 }}>
+            <Stack direction="row" spacing={1} sx={{ minWidth: 0, alignItems: "center" }}>
               <IconButton
                 onClick={() => setDrawerOpen((value) => !value)}
                 aria-label={drawerOpen ? "Replegar menu" : "Abrir menu"}
@@ -931,7 +931,7 @@ function PageHeader({ title, kicker, children, actions }) {
     <Card className="hero-card">
       <CardContent className="page-header-content">
         <Box sx={{ minWidth: 0 }}>
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+          <Stack direction="row" spacing={1} sx={{ mb: 1, alignItems: "center" }}>
             <Chip label={kicker} size="small" color="primary" variant="outlined" />
           </Stack>
           <Typography variant="h4">{title}</Typography>
@@ -963,7 +963,7 @@ function DashboardPanel({ title, children, action }) {
   return (
     <Card sx={{ height: "100%" }}>
       <CardContent>
-        <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ mb: 2 }}>
+        <Stack direction="row" spacing={1} sx={{ mb: 2, alignItems: "center", justifyContent: "space-between" }}>
           <Typography variant="h6">{title}</Typography>
           {action}
         </Stack>
@@ -983,7 +983,7 @@ function BarListChart({ rows, labelFor, valueFor, currency = "ARS" }) {
         const width = max ? `${Math.max(4, (Math.abs(value) / max) * 100)}%` : "4%";
         return (
           <Box key={row.id || row.account_id || row.currency || index}>
-            <Stack direction="row" justifyContent="space-between" spacing={1}>
+            <Stack direction="row" spacing={1} sx={{ justifyContent: "space-between" }}>
               <Typography variant="body2" noWrap>{labelFor(row)}</Typography>
               <Typography variant="body2" fontWeight={700}>{money(value, row.currency || currency)}</Typography>
             </Stack>
@@ -1051,35 +1051,35 @@ function Dashboard({ reloadKey }) {
       {!summary ? <LinearProgress sx={{ mb: 2 }} /> : null}
       <Grid container spacing={2}>
         {balancesByCurrency.map((item) => (
-          <Grid item xs={12} md={4} key={item.currency}>
+          <Grid size={{ xs: 12, md: 4 }} key={item.currency}>
             <DashboardMetric label="Saldo total por moneda" value={money(item.balance, item.currency)}>
               <Chip label={item.currency} size="small" variant="outlined" sx={{ mt: 1.5 }} />
             </DashboardMetric>
           </Grid>
         ))}
-        <Grid item xs={12} sm={6} lg={3}>
+        <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
           <DashboardMetric label="Ingresos de hoy" value={money(summary?.today_income)} />
         </Grid>
-        <Grid item xs={12} sm={6} lg={3}>
+        <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
           <DashboardMetric label="Egresos de hoy" value={money(summary?.today_expense)} />
         </Grid>
-        <Grid item xs={12} sm={6} lg={3}>
+        <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
           <DashboardMetric label="Cierres pendientes" value={pendingCloses.length} />
         </Grid>
-        <Grid item xs={12} sm={6} lg={3}>
+        <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
           <DashboardMetric label="Movimientos anulados" value={summary?.voided_count || 0} />
         </Grid>
-        <Grid item xs={12} lg={5}>
+        <Grid size={{ xs: 12, lg: 5 }}>
           <DashboardPanel title="Flujo del dia" action={<Chip label={formatDate(summary?.date)} size="small" />}>
             <FlowChart income={summary?.today_income} expense={summary?.today_expense} />
           </DashboardPanel>
         </Grid>
-        <Grid item xs={12} lg={7}>
+        <Grid size={{ xs: 12, lg: 7 }}>
           <DashboardPanel title="Saldos por cuenta">
             <BarListChart rows={accounts} labelFor={(row) => row.name} valueFor={(row) => row.balance} />
           </DashboardPanel>
         </Grid>
-        <Grid item xs={12} lg={7}>
+        <Grid size={{ xs: 12, lg: 7 }}>
           <DashboardPanel title="Detalle de cuentas">
             <SimpleTable
               rows={accounts}
@@ -1092,7 +1092,7 @@ function Dashboard({ reloadKey }) {
             />
           </DashboardPanel>
         </Grid>
-        <Grid item xs={12} lg={5}>
+        <Grid size={{ xs: 12, lg: 5 }}>
           <DashboardPanel title="Cierres pendientes del dia">
             <SimpleTable
               rows={pendingCloses}
@@ -1104,7 +1104,7 @@ function Dashboard({ reloadKey }) {
             />
           </DashboardPanel>
         </Grid>
-        <Grid item xs={12} lg={6}>
+        <Grid size={{ xs: 12, lg: 6 }}>
           <DashboardPanel title="Diferencias de caja del dia">
             <SimpleTable
               rows={closeDifferences}
@@ -1117,7 +1117,7 @@ function Dashboard({ reloadKey }) {
             />
           </DashboardPanel>
         </Grid>
-        <Grid item xs={12} lg={6}>
+        <Grid size={{ xs: 12, lg: 6 }}>
           <DashboardPanel title="Recordatorios de impuestos y vencimientos">
             <SimpleTable
               rows={reminders}
@@ -1130,7 +1130,7 @@ function Dashboard({ reloadKey }) {
             />
           </DashboardPanel>
         </Grid>
-        <Grid item xs={12} lg={6}>
+        <Grid size={{ xs: 12, lg: 6 }}>
           <DashboardPanel title="Proveedores con saldo a favor">
             <SimpleTable
               rows={providersWithCredit}
@@ -1141,7 +1141,7 @@ function Dashboard({ reloadKey }) {
             />
           </DashboardPanel>
         </Grid>
-        <Grid item xs={12} lg={6}>
+        <Grid size={{ xs: 12, lg: 6 }}>
           <DashboardPanel title="Personal pendiente de pago">
             <SimpleTable
               rows={employeePending}
@@ -2275,14 +2275,12 @@ function EventsScreen({ refs, mutate, reloadKey }) {
   useEffect(() => {
     if (!selectedEventId) {
       setBudget(null);
-      setCheckoutPreference(null);
       return;
     }
     setLoadingBudget(true);
     api(`/events/${selectedEventId}/budget/`)
       .then((data) => {
         setBudget(data);
-        setCheckoutPreference(null);
         setBudgetForm({
           status: data.status || "DRAFT",
           notes: data.notes || "",
@@ -2437,7 +2435,7 @@ function EventsScreen({ refs, mutate, reloadKey }) {
               <div className="event360-detail-header">
                 <div className="event360-detail-title">
                   <div>
-                    <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                    <Stack direction="row" spacing={1} sx={{ alignItems: "center", flexWrap: "wrap" }}>
                       <Typography variant="h5">{selectedEvent.name}</Typography>
                       <StatusBadge value={selectedEvent.status} />
                     </Stack>
